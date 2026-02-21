@@ -1,0 +1,22 @@
+# Configuration (contains API keys)
+config.yaml
+
+# Data files (contain personal job search results)
+data/*.csv
+data/*.xlsx
+data/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS
+.DS_Store
+
+# Claude Code
+.claude/
+
+# Environment
+.env
+.env.*

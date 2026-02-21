@@ -1,0 +1,698 @@
+"""Job evaluation pipeline: Stage 1 rule-based pre-filter + Stage 2 Claude API scoring."""
+
+import asyncio
+import json
+import logging
+import random
+import re
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import pandas as pd
+
+from .config import EvaluationConfig, PROJECT_ROOT
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: Rule-based pre-filter
+# ---------------------------------------------------------------------------
+
+# Title patterns that auto-skip (case-insensitive regex)
+SKIP_TITLE_PATTERNS = [
+    # Senior leadership (too senior / wrong track)
+    r"\bvp\b", r"\bsvp\b", r"\bceo\b", r"\bcfo\b", r"\bcoo\b", r"\bcmo\b",
+    r"\bchief\b.*\bofficer\b",
+    r"\bprogram\s+director\b",
+    # Manufacturing / QC / QA
+    r"\bqc analyst\b", r"\bqc technician\b", r"\bqc specialist\b",
+    r"\bmanufacturing\b.*\btechnician\b", r"\bmanufacturing\b.*\boperator\b",
+    r"\bproduction\b.*\boperator\b", r"\bproduction\b.*\btechnician\b",
+    r"\bcgmp\b.*\bmanufactur\b", r"\bfill.*finish\b",
+    r"\bdownstream\b", r"\bcompounding\b",
+    # Instrumentation-specific mismatches
+    r"\bhplc\b.*\bscientist\b", r"\blc-ms\b", r"\blcms\b", r"\bmass spec\b",
+    r"\bprotein.*scientist\b", r"\bprotein.*chemist\b",
+    r"\bformulation\b.*\bscientist\b",
+    # Computational / bioinformatics
+    r"\bbioinformatic", r"\bcomputational\b.*\bbiolog",
+    r"\bdata\s+scientist\b", r"\bmachine\s+learning\b",
+    r"\bsoftware\b.*\bengineer\b", r"\bai\b.*\bengineer\b",
+    r"\bcomputer\s+scientist\b", r"\bcomputing\b", r"\bcyber\s+security\b",
+    # Chemistry-specific
+    r"\borganic\b.*\bchemist\b", r"\bprocess\b.*\bchemist\b",
+    r"\bmedicinal\b.*\bchemist\b", r"\bsynthetic\b.*\bchemist\b",
+    r"\banalytical\b.*\bchemist\b",
+    # Entry level / trainee
+    r"\bresearch\s+associate\b", r"\blab\s+technician\b",
+    r"\bresearch\s+technician\b", r"\bintern\b", r"\bco-?op\b",
+    r"\bpostdoc\b", r"\bpostdoctoral\b",
+    r"\bassistant\s+prof",
+    # Clinical / medical
+    r"\bmedical\s+director\b", r"\bphysician\b", r"\bnurse\b",
+    r"\bpharmacist\b", r"\bpharmacy\b",
+    r"\bclinical\s+research\s+coordinator\b",
+    r"\bclinical\s+research\s+associate\b", r"\bclinical\s+research\s+assistant\b",
+    r"\bmedical\s+science\s+liaison\b",
+    r"\boncology\s+expert\b", r"\boncology\s+data\b",
+    r"\bmental\s+health\b", r"\bpsychologist\b", r"\bdietitian\b",
+    # Sales / commercial
+    r"\bsales\b", r"\bterritory\b.*\bmanager\b", r"\bbusiness\s+development\b",
+    r"\bcommercial\b", r"\bbrand\s+marketing\b",
+    # Other mismatches
+    r"\bveterinar\b", r"\bregulatory\s+affairs\b.*\bspecialist\b",
+    r"\bproject\s+manager\b", r"\bprogram\s+manager\b",
+    r"\bsupply\s+chain\b", r"\bprocurement\b",
+    r"\benvironmental\b.*\bscientist\b",
+    # Unrelated fields
+    r"\bfinance\b", r"\blaw\b", r"\bforestry\b", r"\benergy\b",
+]
+
+# Description patterns that auto-skip (unless rescued)
+SKIP_DESCRIPTION_PATTERNS = [
+    r"\bextensive\b.*\bexperience\b.*\bhplc\b",
+    r"\bextensive\b.*\bexperience\b.*\blc-ms\b",
+    r"\bbioreactor\s+operation\b",
+    r"\bada\s+assay\b", r"\banti-drug\s+antibody\b",
+    r"\bcell\s+line\s+development\b.*\bcho\b",
+    r"\bcho\s+cell\b",
+    r"\bin\s+vitro\s+transcription\b.*\bmrna\b",
+    r"\bcleanroom\b.*\bexperience\b.*\brequired\b",
+    r"\bformulation\b.*\bdevelopment\b.*\brequired\b",
+    r"\bpharmacokinetic\s+modeling\b",
+    r"\bpbpk\b.*\bmodel\b",
+    r"\bprotein\s+purification\b.*\brequired\b",
+    r"\bce-sds\b.*\brequired\b",
+    r"\bsec-hplc\b.*\brequired\b",
+    r"\bicief\b.*\brequired\b",
+]
+
+# Rescue patterns: if description matches these, do NOT skip even if skip_description matched
+RESCUE_PATTERNS = [
+    r"\bqpcr\b", r"\brt-qpcr\b", r"\bddpcr\b",
+    r"\bflow\s+cytometry\b", r"\bfacs\b",
+    r"\bgene\s+therapy\b", r"\bviral\s+vector\b",
+    r"\baav\b", r"\blentivir\b", r"\bcar-t\b",
+    r"\bglp\b", r"\bbiodistribution\b", r"\bshedding\b",
+    r"\blnp\b", r"\bnucleic\s+acid\b",
+    r"\borganoid\b", r"\b10x\s+genomics\b",
+]
+
+# Boost patterns: jobs matching these get priority for evaluation
+BOOST_PATTERNS = [
+    r"\bbioanalytical\b", r"\bbioanalysis\b",
+    r"\bgene\s+therapy\b", r"\bcell\s+therapy\b",
+    r"\bcar-t\b", r"\bcar\s+t\b",
+    r"\bviral\s+vector\b", r"\baav\b",
+    r"\bflow\s+cytometry\b", r"\bfacs\b",
+    r"\bmethod\s+validation\b", r"\bassay\s+validation\b",
+    r"\bqpcr\b", r"\bddpcr\b", r"\brt-qpcr\b",
+    r"\bbiodistribution\b", r"\bshedding\b",
+    r"\bglp\b", r"\btranslational\b.*\bbiomarker\b",
+    r"\blnp\b", r"\bnucleic\s+acid\b.*\btherap\b",
+    r"\borganoid\b", r"\bpotency\s+assay\b",
+]
+
+
+def _compile_patterns(patterns: list[str]) -> list[re.Pattern]:
+    return [re.compile(p, re.IGNORECASE) for p in patterns]
+
+
+_skip_title_compiled = _compile_patterns(SKIP_TITLE_PATTERNS)
+_skip_desc_compiled = _compile_patterns(SKIP_DESCRIPTION_PATTERNS)
+_rescue_compiled = _compile_patterns(RESCUE_PATTERNS)
+_boost_compiled = _compile_patterns(BOOST_PATTERNS)
+
+
+@dataclass
+class PreFilterResult:
+    action: str  # "skip", "evaluate", "boost"
+    reason: str
+    matched_pattern: str = ""
+
+
+def prefilter_job(title: str, description: str = "") -> PreFilterResult:
+    """Stage 1: Rule-based pre-filter. Returns skip/evaluate/boost decision."""
+    title = (title or "").strip()
+    description = (description or "").strip()
+    title_lower = title.lower()
+    combined = f"{title} {description}"
+
+    # Check title skip patterns
+    for pattern in _skip_title_compiled:
+        if pattern.search(title):
+            return PreFilterResult("skip", "title_match", pattern.pattern)
+
+    # Check description skip patterns (with rescue logic)
+    if description:
+        for pattern in _skip_desc_compiled:
+            if pattern.search(description):
+                # Check rescue patterns before skipping
+                rescued = False
+                for rescue in _rescue_compiled:
+                    if rescue.search(combined):
+                        rescued = True
+                        break
+                if not rescued:
+                    return PreFilterResult("skip", "description_match", pattern.pattern)
+
+    # Check boost patterns
+    for pattern in _boost_compiled:
+        if pattern.search(combined):
+            return PreFilterResult("boost", "boost_match", pattern.pattern)
+
+    return PreFilterResult("evaluate", "no_skip_pattern", "")
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Claude API evaluation
+# ---------------------------------------------------------------------------
+
+def load_resume_profile(config: EvaluationConfig) -> dict:
+    """Load the structured resume profile JSON."""
+    profile_path = PROJECT_ROOT / config.resume_profile
+    with open(profile_path, "r") as f:
+        return json.load(f)
+
+
+def _build_system_prompt(profile: dict) -> str:
+    """Build the system prompt for Claude API evaluation."""
+    return f"""You are a job-fit evaluator for a senior scientist in pharma/biotech.
+
+CANDIDATE PROFILE:
+{json.dumps(profile, indent=2)}
+
+DOMAIN CALIBRATION (from historical fit assessments):
+- CRO management / bioanalytical outsourcing: 70%+
+- Gene therapy bioanalytical (AAV, lentiviral, LNP): 65-75%
+- Cell therapy analytical (CAR-T): 65-70%
+- Flow cytometry / immunophenotyping: strong fit
+- Biomarker / translational: 60-75%
+- Cell biology / in vitro assay development: 60-65%
+- Molecular diagnostics / qPCR-focused: 60-65%
+- NAMs / in vitro tox / 3D models: moderate
+- Oncology target validation: 55-60%
+- CMC analytical with qPCR/ddPCR: 50-55%
+- IVD / analytical validation: 55-60%
+- GMP AS&T / QC analytical (with qPCR overlap): 55-60%
+- Drug discovery / pharmacology / in vivo: usually skip
+- Biologics CMC (HPLC/CE/protein): skip
+- cGMP / QA / manufacturing: skip
+- Computational biology: skip
+- Organic/process chemistry: skip
+
+SCORING RULES:
+- Score 0-100 based on overlap between candidate skills and STATED job requirements
+- fit_bucket: strong (70+), moderate (55-69), weak (40-54), poor (<40)
+- recommendation: apply (60+), maybe (45-59), skip (<45)
+- If the description is a generic company blurb with no specific job requirements, treat it as title-only
+- TITLE-ONLY or THIN DESCRIPTION: If the job has no description or only a brief/generic snippet with no specific requirements listed, cap the score at 50 maximum. Note "limited info — title-only assessment" in reasoning. Only match on what the title explicitly indicates (e.g., "Bioanalytical Scientist" matches bioanalytical domain, but do NOT infer specific techniques)
+
+OUTPUT FORMAT — respond with ONLY valid JSON, no markdown:
+{{
+  "fit_score": <int 0-100>,
+  "fit_bucket": "<strong|moderate|weak|poor>",
+  "recommendation": "<apply|maybe|skip>",
+  "domain_match": "<primary domain category>",
+  "reasoning": "<2-3 sentence explanation>"
+}}"""
+
+
+def _is_substantive_description(description: str) -> bool:
+    """Check if a description has real job requirements vs. generic company boilerplate.
+
+    A substantive description should mention specific skills, qualifications,
+    or responsibilities — not just "we are a global healthcare leader" type text.
+    """
+    if not description or len(description.strip()) < 200:
+        return False
+    desc_lower = description.lower()
+    # Look for signals of real job content
+    job_signals = [
+        "qualifications", "requirements", "responsibilities", "experience",
+        "must have", "preferred", "required", "skills", "duties",
+        "bachelor", "master", "phd", "degree", "years of experience",
+    ]
+    return any(signal in desc_lower for signal in job_signals)
+
+
+def _build_user_prompt(title: str, company: str, description: str,
+                       description_available: bool) -> str:
+    """Build the user prompt for a single job evaluation."""
+    if description_available and description and _is_substantive_description(description):
+        return f"""Evaluate this job for candidate fit:
+
+TITLE: {title}
+COMPANY: {company}
+
+JOB DESCRIPTION:
+{description}
+
+Score based on overlap between candidate skills and STATED job requirements."""
+    else:
+        return f"""Evaluate this job for candidate fit (TITLE ONLY — no substantive description available, cap score at 50 max):
+
+TITLE: {title}
+COMPANY: {company}
+
+NOTE: No specific job requirements are available. Score based ONLY on what the title explicitly indicates. Do NOT infer specific techniques unless the title mentions them."""
+
+
+async def evaluate_single_job(
+    client,
+    model: str,
+    system_prompt: str,
+    title: str,
+    company: str,
+    description: str,
+    description_max_chars: int,
+    max_retries: int = 5,
+) -> dict:
+    """Evaluate a single job using the Claude API with retry-with-backoff.
+
+    Retries on rate limit (429) errors with exponential backoff + jitter.
+    The Anthropic SDK has its own retries; this is an additional outer layer
+    that catches failures the SDK couldn't resolve.
+    """
+    import anthropic
+
+    description_available = bool(description and str(description).strip()
+                                  and str(description).lower() != "nan")
+    truncated_desc = ""
+    if description_available:
+        truncated_desc = str(description).strip()[:description_max_chars]
+
+    user_prompt = _build_user_prompt(title, company, truncated_desc, description_available)
+
+    base_delay = 5.0  # Initial backoff delay in seconds
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = await asyncio.to_thread(
+                client.messages.create,
+                model=model,
+                max_tokens=1024,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+
+            raw_text = response.content[0].text.strip()
+            # Strip markdown fences if present
+            if raw_text.startswith("```"):
+                raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+                raw_text = re.sub(r"\s*```$", "", raw_text)
+
+            result = json.loads(raw_text)
+
+            # Validate required fields
+            required = ["fit_score", "fit_bucket", "recommendation", "domain_match", "reasoning"]
+            for fld in required:
+                if fld not in result:
+                    result[fld] = "" if fld in ("domain_match", "reasoning") else 0
+
+            # Ensure score is int
+            result["fit_score"] = int(result.get("fit_score", 0))
+
+            result["description_available"] = description_available
+            result["input_tokens"] = response.usage.input_tokens
+            result["output_tokens"] = response.usage.output_tokens
+            return result
+
+        except anthropic.RateLimitError as e:
+            if attempt == max_retries:
+                logger.warning(f"Rate limit exhausted after {max_retries} retries for '{title}'")
+                return _error_result(title, f"Rate limit after {max_retries} retries", description_available)
+            # Exponential backoff: 5s, 10s, 20s, 40s... + random jitter
+            delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 2)
+            logger.info(f"Rate limited on '{title}' (attempt {attempt}/{max_retries}), "
+                        f"backing off {delay:.1f}s")
+            await asyncio.sleep(delay)
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON parse error for '{title}': {e}")
+            return _error_result(title, f"JSON parse error: {e}", description_available)
+
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529:  # Overloaded
+                if attempt == max_retries:
+                    logger.warning(f"API overloaded after {max_retries} retries for '{title}'")
+                    return _error_result(title, f"API overloaded after {max_retries} retries", description_available)
+                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 2)
+                logger.info(f"API overloaded for '{title}' (attempt {attempt}/{max_retries}), "
+                            f"backing off {delay:.1f}s")
+                await asyncio.sleep(delay)
+            else:
+                logger.warning(f"API error for '{title}': {e}")
+                return _error_result(title, str(e), description_available)
+
+        except Exception as e:
+            logger.warning(f"API error for '{title}': {e}")
+            return _error_result(title, str(e), description_available)
+
+    return _error_result(title, "Max retries exceeded", description_available)
+
+
+def _error_result(title: str, error: str, description_available: bool) -> dict:
+    return {
+        "fit_score": 0,
+        "fit_bucket": "error",
+        "recommendation": "skip",
+        "domain_match": "error",
+        "reasoning": f"Evaluation failed: {error}",
+        "description_available": description_available,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+
+async def evaluate_batch(
+    jobs_df: pd.DataFrame,
+    config: EvaluationConfig,
+    progress_callback=None,
+) -> list[dict]:
+    """Evaluate a batch of jobs using the Claude API with rate limiting.
+
+    Args:
+        jobs_df: DataFrame with columns: job_url, title, company, description
+        config: EvaluationConfig with API settings
+        progress_callback: optional callable(completed, total) for progress updates
+
+    Returns:
+        List of dicts, each with job_url + evaluation fields
+    """
+    try:
+        import anthropic
+    except ImportError:
+        raise ImportError("anthropic package required. Install with: pip install anthropic")
+
+    api_key = config.get_api_key()
+    if not api_key:
+        raise ValueError("No Anthropic API key found. Set ANTHROPIC_API_KEY env var or anthropic_api_key in config.yaml")
+
+    # Configure SDK with its own retry layer (handles transient errors internally)
+    client = anthropic.Anthropic(api_key=api_key, max_retries=config.max_retries)
+    profile = load_resume_profile(config)
+    system_prompt = _build_system_prompt(profile)
+
+    results = []
+    total = len(jobs_df)
+    semaphore = asyncio.Semaphore(config.max_concurrent)
+    completed = 0
+
+    async def eval_with_rate_limit(row):
+        nonlocal completed
+        async with semaphore:
+            result = await evaluate_single_job(
+                client=client,
+                model=config.model,
+                system_prompt=system_prompt,
+                title=str(row.get("title", "")),
+                company=str(row.get("company", "")),
+                description=str(row.get("description", "")),
+                description_max_chars=config.description_max_chars,
+                max_retries=config.max_retries,
+            )
+            result["job_url"] = row["job_url"]
+            result["evaluated_timestamp"] = pd.Timestamp.now().isoformat()
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, total)
+            await asyncio.sleep(config.delay_between_calls)
+            return result
+
+    tasks = [eval_with_rate_limit(row) for _, row in jobs_df.iterrows()]
+
+    # Process in chunks to allow backpressure
+    chunk_size = config.max_concurrent * 2
+    for i in range(0, len(tasks), chunk_size):
+        chunk = tasks[i:i + chunk_size]
+        chunk_results = await asyncio.gather(*chunk, return_exceptions=True)
+        for r in chunk_results:
+            if isinstance(r, Exception):
+                logger.error(f"Evaluation task failed: {r}")
+            else:
+                results.append(r)
+
+    return results
+
+
+def _save_descriptions_to_csv(fetched: dict, jobs_df: pd.DataFrame, config: EvaluationConfig):
+    """Write fetched descriptions back to the master CSV so future runs skip re-fetching."""
+    try:
+        from .exporter import get_master_path
+        from .config import PROJECT_ROOT
+        # Build output config from evaluation config path
+        # We need the output config — derive it from the CSV location
+        csv_path = PROJECT_ROOT / "data" / "pharma_jobs.csv"
+        if not csv_path.exists():
+            return
+
+        master_df = pd.read_csv(csv_path)
+
+        # Map fetched descriptions by job_url from the jobs_df
+        updated = 0
+        for idx, desc in fetched.items():
+            if idx in jobs_df.index:
+                job_url = jobs_df.at[idx, "job_url"]
+                mask = master_df["job_url"] == job_url
+                if mask.any():
+                    master_df.loc[mask, "description"] = desc
+                    updated += 1
+
+        if updated > 0:
+            master_df.to_csv(csv_path, index=False)
+            logger.info(f"Saved {updated} fetched descriptions back to master CSV")
+    except Exception as e:
+        logger.warning(f"Could not save descriptions to CSV: {e}")
+
+
+def _update_eval_status_in_csv(evaluated_urls: list[str], skipped_urls: list[str]):
+    """Write eval_status back to the master CSV for evaluated and skipped jobs."""
+    try:
+        csv_path = PROJECT_ROOT / "data" / "pharma_jobs.csv"
+        if not csv_path.exists():
+            return
+
+        master_df = pd.read_csv(csv_path)
+        if "eval_status" not in master_df.columns:
+            master_df["eval_status"] = ""
+
+        updated = 0
+        if evaluated_urls:
+            mask = master_df["job_url"].isin(evaluated_urls)
+            master_df.loc[mask, "eval_status"] = "evaluated"
+            updated += mask.sum()
+
+        if skipped_urls:
+            mask = master_df["job_url"].isin(skipped_urls)
+            master_df.loc[mask, "eval_status"] = "skipped"
+            updated += mask.sum()
+
+        if updated > 0:
+            master_df.to_csv(csv_path, index=False)
+            logger.info(f"Updated eval_status in master CSV for {updated} jobs")
+    except Exception as e:
+        logger.warning(f"Could not update eval_status in CSV: {e}")
+
+
+def run_evaluation_pipeline(
+    jobs_df: pd.DataFrame,
+    config: EvaluationConfig,
+    store,
+    prefilter_only: bool = False,
+    re_evaluate: bool = False,
+    progress_callback=None,
+) -> dict:
+    """Run the full evaluation pipeline: pre-filter → skip evaluated → Claude API → persist.
+
+    Args:
+        jobs_df: Full DataFrame of jobs to evaluate
+        config: EvaluationConfig
+        store: EvaluationStore instance
+        prefilter_only: If True, only run Stage 1 (no API calls)
+        re_evaluate: If True, re-evaluate even if already scored
+        progress_callback: optional callable(completed, total)
+
+    Returns:
+        Summary dict with counts
+    """
+    total = len(jobs_df)
+    logger.info(f"Evaluation pipeline starting with {total} jobs")
+
+    # Stage 1: Pre-filter
+    skip_count = 0
+    boost_count = 0
+    evaluate_jobs = []
+    skipped_urls = []  # Track URLs for eval_status writeback
+
+    for _, row in jobs_df.iterrows():
+        job_url = row.get("job_url", "")
+        title = str(row.get("title", ""))
+        description = str(row.get("description", ""))
+
+        pf = prefilter_job(title, description)
+
+        if pf.action == "skip":
+            skip_count += 1
+            skipped_urls.append(job_url)
+            # Store the skip result
+            store.add_evaluation(job_url, {
+                "fit_score": 0,
+                "fit_bucket": "prefilter_skip",
+                "recommendation": "skip",
+                "domain_match": "N/A",
+                "reasoning": f"Pre-filter skip: {pf.reason} ({pf.matched_pattern})",
+                "description_available": bool(description and description.lower() != "nan"),
+                "evaluated_timestamp": pd.Timestamp.now().isoformat(),
+                "input_tokens": 0,
+                "output_tokens": 0,
+            })
+        else:
+            evaluate_jobs.append((row, pf))
+            if pf.action == "boost":
+                boost_count += 1
+
+    logger.info(f"Pre-filter: {skip_count} skipped, {boost_count} boosted, "
+                f"{len(evaluate_jobs)} to evaluate")
+
+    if prefilter_only:
+        # Write eval_status for skipped jobs even in prefilter-only mode
+        if skipped_urls:
+            _update_eval_status_in_csv([], skipped_urls)
+        return {
+            "total": total,
+            "prefilter_skipped": skip_count,
+            "boosted": boost_count,
+            "to_evaluate": len(evaluate_jobs),
+            "evaluated": 0,
+            "already_evaluated": 0,
+        }
+
+    # Filter out already-evaluated jobs (unless re_evaluate)
+    already_evaluated = 0
+    to_api = []
+    for row, pf in evaluate_jobs:
+        job_url = row.get("job_url", "")
+        if not re_evaluate and store.is_evaluated(job_url):
+            already_evaluated += 1
+        else:
+            to_api.append(row)
+
+    # Sort: boosted jobs first
+    boosted_urls = {row.get("job_url", "") for row, pf in evaluate_jobs if pf.action == "boost"}
+    to_api_df = pd.DataFrame(to_api)
+    if not to_api_df.empty and "job_url" in to_api_df.columns:
+        to_api_df["_boost"] = to_api_df["job_url"].isin(boosted_urls)
+        to_api_df = to_api_df.sort_values("_boost", ascending=False).drop(columns=["_boost"])
+
+    logger.info(f"API evaluation: {len(to_api_df)} jobs ({already_evaluated} already evaluated, skipping)")
+
+    if to_api_df.empty:
+        # Write eval_status for skipped jobs
+        if skipped_urls:
+            _update_eval_status_in_csv([], skipped_urls)
+        return {
+            "total": total,
+            "prefilter_skipped": skip_count,
+            "boosted": boost_count,
+            "to_evaluate": len(evaluate_jobs),
+            "evaluated": 0,
+            "already_evaluated": already_evaluated,
+            "descriptions_fetched": 0,
+        }
+
+    # Stage 1.5: Fetch missing descriptions for jobs without substantive content
+    descriptions_fetched = 0
+    if not to_api_df.empty:
+        needs_fetch = ~to_api_df["description"].apply(
+            lambda d: _is_substantive_description(str(d) if pd.notna(d) else "")
+        )
+        fetch_count = needs_fetch.sum()
+        if fetch_count > 0:
+            from .description_fetcher import fetch_missing_descriptions
+
+            def fetch_progress(done, total_fetch, succeeded):
+                logger.info(f"  Fetching descriptions: {done}/{total_fetch} "
+                            f"({succeeded} succeeded)")
+
+            fetched = fetch_missing_descriptions(
+                to_api_df, needs_fetch,
+                delay=1.5,
+                progress_callback=fetch_progress,
+            )
+            # Update DataFrame with fetched descriptions
+            for idx, desc in fetched.items():
+                to_api_df.at[idx, "description"] = desc
+            descriptions_fetched = len(fetched)
+            logger.info(f"Enriched {descriptions_fetched}/{fetch_count} jobs with fetched descriptions")
+
+            # Save fetched descriptions back to master CSV so future runs skip fetching
+            if fetched:
+                _save_descriptions_to_csv(fetched, jobs_df, config)
+
+    # Stage 2: Claude API evaluation
+    results = asyncio.run(evaluate_batch(to_api_df, config, progress_callback))
+
+    # Persist results
+    evaluated_urls = []
+    for result in results:
+        job_url = result.pop("job_url", "")
+        if job_url:
+            store.add_evaluation(job_url, result)
+            evaluated_urls.append(job_url)
+
+    store.save()
+
+    # Write eval_status back to master CSV
+    _update_eval_status_in_csv(evaluated_urls, skipped_urls)
+
+    return {
+        "total": total,
+        "prefilter_skipped": skip_count,
+        "boosted": boost_count,
+        "to_evaluate": len(evaluate_jobs),
+        "evaluated": len(results),
+        "already_evaluated": already_evaluated,
+        "descriptions_fetched": descriptions_fetched,
+    }
+
+
+def estimate_cost(jobs_df: pd.DataFrame, config: EvaluationConfig, store) -> dict:
+    """Estimate the cost of evaluating a batch of jobs (dry run)."""
+    total = len(jobs_df)
+    skip_count = 0
+    evaluate_count = 0
+    already_evaluated = 0
+
+    for _, row in jobs_df.iterrows():
+        title = str(row.get("title", ""))
+        description = str(row.get("description", ""))
+        job_url = row.get("job_url", "")
+
+        pf = prefilter_job(title, description)
+        if pf.action == "skip":
+            skip_count += 1
+        elif store.is_evaluated(job_url):
+            already_evaluated += 1
+        else:
+            evaluate_count += 1
+
+    # Haiku pricing: $0.80/M input, $4.00/M output (as of 2025)
+    avg_input_tokens = 2500
+    avg_output_tokens = 300
+    input_cost = (evaluate_count * avg_input_tokens / 1_000_000) * 0.80
+    output_cost = (evaluate_count * avg_output_tokens / 1_000_000) * 4.00
+    total_cost = input_cost + output_cost
+
+    return {
+        "total_jobs": total,
+        "prefilter_skip": skip_count,
+        "already_evaluated": already_evaluated,
+        "to_evaluate": evaluate_count,
+        "estimated_input_tokens": evaluate_count * avg_input_tokens,
+        "estimated_output_tokens": evaluate_count * avg_output_tokens,
+        "estimated_cost_usd": round(total_cost, 4),
+    }
