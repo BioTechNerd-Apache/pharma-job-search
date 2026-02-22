@@ -19,6 +19,9 @@ __pycache__/
 # Claude Code
 .claude/
 
+# Local-only scripts
+push_to_github.command
+
 # Environment
 .env
 .env.*
