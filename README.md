@@ -74,6 +74,10 @@ Or double-click the launcher for your platform:
 - **macOS**: `BioTechNerd-Apache's Job Search.command`
 - **Windows**: `BioTechNerd-Apache's Job Search.bat`
 
+> **Desktop shortcut:** Drag and drop the `.command` (Mac) or `.bat` (Windows) file from the project folder onto your Desktop for one-click dashboard access.
+
+> **Dashboard search button:** The dashboard has a "Run New Search" button in the sidebar. Clicking it will scrape all 5 job boards for the last 7 days (the default in `config.yaml`). It does **not** run AI evaluation — that requires the CLI (`python job_search.py --evaluate`). To change the search window, edit the `days` value under `search:` in `config.yaml`.
+
 ## API Keys
 
 | Source | Required? | Where to Register |
