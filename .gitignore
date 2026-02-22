@@ -5,6 +5,8 @@ config.yaml
 data/*.csv
 data/*.xlsx
 data/*.json
+!data/resume_profile.example.json
+!data/.gitkeep
 
 # Python
 __pycache__/

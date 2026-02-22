@@ -1,0 +1,74 @@
+{
+  "name": "Dr. Jane Smith, PhD",
+  "years_experience": 12,
+  "target_level": ["Senior Scientist", "Principal Scientist", "Associate Director"],
+  "career_anchors": {
+    "CurrentCompany": {
+      "period": "2020-2025",
+      "title": "Senior Research Scientist",
+      "key_skills": [
+        "qPCR/RT-qPCR method development and GLP validation",
+        "AAV vector characterization",
+        "Biodistribution and shedding assays",
+        "Method transfer to CROs",
+        "Team leadership (3 scientists)"
+      ]
+    },
+    "PreviousCompany": {
+      "period": "2016-2020",
+      "title": "Research Scientist",
+      "key_skills": [
+        "Flow cytometry (8+ color panels)",
+        "Cell-based potency assays",
+        "Primary cell isolation and culture",
+        "Multiplex cytokine analysis"
+      ]
+    },
+    "AcademicLab": {
+      "period": "2013-2016",
+      "title": "Postdoctoral Fellow",
+      "key_skills": [
+        "RT-qPCR gene expression analysis",
+        "CRISPR/Cas9 gene editing",
+        "In vivo xenograft studies",
+        "Publications in peer-reviewed journals"
+      ]
+    }
+  },
+  "core_technical_platforms": [
+    "qPCR/RT-qPCR (QuantStudio, Bio-Rad CFX)",
+    "ddPCR (QX200)",
+    "Flow cytometry (multicolor, FlowJo)",
+    "ELISA (sandwich, competitive)",
+    "Cell culture (primary cells, cell lines)"
+  ],
+  "regulatory_framework": [
+    "GLP method validation (ICH M10, ICH Q2)",
+    "21 CFR Part 11 compliance",
+    "GLP study direction",
+    "SOP authoring"
+  ],
+  "strongest_fit_domains": [
+    "Gene therapy bioanalytical (AAV, lentiviral)",
+    "Cell therapy analytical (CAR-T)",
+    "Flow cytometry / immunophenotyping",
+    "Method validation (qPCR/ddPCR-based)"
+  ],
+  "moderate_fit_domains": [
+    "Cell biology / in vitro assay development",
+    "Molecular diagnostics / qPCR-focused",
+    "Oncology target validation",
+    "Biomarker / translational research"
+  ],
+  "skip_domains": [
+    "Drug discovery / pharmacology / in vivo",
+    "Biologics CMC analytical (HPLC/CE/protein-focused)",
+    "Computational biology (Python/R/ML)"
+  ],
+  "never_claim": [
+    "LC-MS / small molecule bioanalysis",
+    "ADA / anti-drug antibody assays",
+    "Bioreactor operation",
+    "CHO cell line development"
+  ]
+}

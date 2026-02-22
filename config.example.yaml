@@ -1,0 +1,487 @@
+# Pharma/Biotech Job Search Configuration
+# Copy to config.yaml and add your API keys
+
+search:
+  terms:
+    # Broad terms (cast a wide net, discipline filter narrows results)
+    - "scientist pharma"
+    - "scientist biotech"
+    - "biologist pharma"
+    # Specific roles
+    - "cell gene therapy scientist"
+    - "bioanalytical scientist"
+    - "molecular biology scientist"
+    - "oncology scientist"
+    - "method validation scientist"
+    - "CAR-T scientist"
+    - "gene therapy manufacturing"
+    - "DMPK scientist"
+    - "flow cytometry scientist"
+    # Scientist (targeted variants)
+    - "research scientist"
+    - "senior scientist"
+    - "principal scientist"
+    # Director-level roles
+    - "associate director bioanalytical"
+    - "director of science pharma"
+    - "director of science biotech"
+    - "bioanalytical director"
+    - "director molecular biology"
+    - "director cell gene therapy"
+    - "director biotech"
+    - "director pharma"
+    # New categories
+    - "translational research"
+    - "precision medicine"
+    - "analytical development"
+
+  sites:
+    - indeed
+    - linkedin
+    # zip_recruiter, glassdoor, google removed — anti-bot blocks return 0 results via JobSpy
+  days: 7
+  results_per_site: 100
+  delay_between_searches: 5
+  location: "United States"
+  country_indeed: "USA"
+  fetch_descriptions: false
+
+  # Synonym expansion: each key auto-expands into its aliases during search
+  # e.g., if "cell gene therapy" is a search term, its synonyms are also searched
+  synonyms:
+    "cell gene therapy":
+      - "CGT scientist"
+      - "CAR-T scientist"
+      - "gene therapy"
+      - "cell therapy"
+    "bioanalytical":
+      - "bioanalysis"
+      - "ligand binding assay"
+      - "PK/PD"
+      - "pharmacokinetics"
+    "molecular biology":
+      - "molecular biologist"
+      - "qPCR"
+      - "PCR scientist"
+      - "genomics"
+      - "ddPCR"
+      - "organoid"
+      - "primary cell isolation"
+    "oncology":
+      - "immuno-oncology"
+      - "tumor biology"
+      - "cancer research"
+      - "hematology"
+    "method validation":
+      - "assay validation"
+      - "analytical method"
+      - "GLP scientist"
+    "DMPK":
+      - "drug metabolism"
+      - "pharmacokinetics"
+      - "ADME"
+    "flow cytometry":
+      - "FACS"
+      - "flow cytometry scientist"
+    "research scientist":
+      - "senior scientist"
+      - "principal scientist"
+    "translational research":
+      - "translational medicine"
+      - "translational scientist"
+      - "clinical development scientist"
+    "precision medicine":
+      - "personalized medicine"
+      - "biomarker"
+      - "companion diagnostics"
+      - "targeted therapy"
+    "analytical development":
+      - "analytical scientist"
+      - "method development"
+      - "analytical chemist"
+      - "stability scientist"
+    "director":
+      - "associate director"
+      - "senior director"
+      - "director of science"
+      - "head of"
+      - "director of bioanalytical"
+      - "director of molecular biology"
+
+  # Post-scrape discipline filter: keep only biology/medicine roles
+  # Titles/descriptions must match at least one include keyword
+  filter_include:
+    - biolog
+    - bioanalyt
+    - molecular
+    - cell therapy
+    - cell line
+    - cell culture
+    - cell biology
+    - stem cell
+    - CAR-T
+    - gene therapy
+    - gene editing
+    - genetic
+    - genomic
+    - oncolog
+    - cancer
+    - immuno
+    - pharma
+    - biotech
+    - qpcr
+    - pcr
+    - assay
+    - potency
+    - biodistribution
+    - viral vector
+    - flow cytometry
+    - translational
+    - preclinical
+    - clinical research
+    - clinical development
+    - clinical trial
+    - clinical scientist
+    - clinical study
+    - therapeutic
+    - drug discovery
+    - GLP
+    - GMP
+    - biomanufactur
+    - GMP manufactur
+    - manufacturing scientist
+    - manufacturing director
+    - quality control
+    - method validation
+    - assay validation
+    - validation scientist
+    - analytical validation
+    - regulatory
+    - scientist
+    - science
+    - associate director
+    - translational
+    - precision medicine
+    - personalized medicine
+    - biomarker
+    - companion diagnostic
+    - targeted therap
+    - analytical
+    - stability
+    - method development
+    - ddpcr
+    - organoid
+    - primary cell
+
+  # Exclude non-biology disciplines and irrelevant roles
+  filter_exclude:
+    # Engineering (non-bio)
+    - mechanical engineer
+    - electrical engineer
+    - software engineer
+    - data engineer
+    - civil engineer
+    - environmental
+    - chemical engineer
+    - materials scientist
+    - physics
+    - physicist
+    - geolog
+    - petroleum
+    - mining
+    - aerospace
+    - computational
+    - quantum
+    - fermentation
+    - LC-MS
+    # Tech company "scientist" roles (not pharma research)
+    - applied scientist
+    - applied science
+    - robotics
+    - sponsored products
+    - product management
+    - enablement
+    - payer relations
+    - advertiser
+    # Data Science, AI & Machine Learning
+    - data scientist
+    - data science
+    - data analyst
+    - machine learning
+    - deep learning
+    - artificial intelligence
+    - AI engineer
+    - AI scientist
+    - NLP engineer
+    - computer vision engineer
+    - MLOps
+    - LLM
+    # Sales & Commercial
+    - sales
+    - territory manager
+    - account executive
+    - business development
+    # Administrative & Operations
+    - administrative assistant
+    - executive assistant
+    - office manager
+    - receptionist
+    - data entry
+    - coordinator
+    # IT & Engineering
+    - IT specialist
+    - database administrator
+    - systems administrator
+    - network engineer
+    - help desk
+    # HR & Recruiting
+    - recruiter
+    - talent acquisition
+    - human resources
+    - HR manager
+    # Marketing & Communications
+    - marketing manager
+    - brand manager
+    - communications specialist
+    - copywriter
+    # Supply Chain & Logistics
+    - supply chain
+    - logistics
+    - procurement
+    - purchasing
+    - inventory
+    # Finance & Accounting
+    - accountant
+    - financial analyst
+    - accounts payable
+    - bookkeeper
+    - controller
+    - financial advisor
+    - insurance agent
+    # Facilities & Maintenance
+    - maintenance technician
+    - facilities manager
+    - HVAC
+    - plumber
+    - electrician
+    - janitor
+    - custodian
+    - housekeeper
+    # Pharmacy (dispensing, not research)
+    - pharmacist
+    - pharmacy technician
+    - pharmacy manager
+    - dispensing
+    # Teaching & Academic (not research)
+    - tutor
+    - lecturer
+    - instructor
+    - adjunct professor
+    - assistant professor
+    - associate professor
+    - teaching assistant
+    - teacher
+    # Healthcare / Nursing / Clinical care (not research)
+    - nurse
+    - " RN "
+    - " RN-"
+    - ",RN"
+    - "(RN)"
+    - "RN "
+    - " RN,"
+    - physician
+    - oncologist
+    - microbiologist
+    - clinical partner
+    - clinical operations
+    - dental
+    - dentist
+    - veterinar
+    - occupational therapist
+    - physical therapist
+    - respiratory therapist
+    - speech therapist
+    - behavioral therapist
+    - licensed therapist
+    - social worker
+    - counselor
+    - paramedic
+    - phlebotom
+    - medical assistant
+    - medical coder
+    - medical biller
+    - medical director
+    - medical lab
+    - medical science liaison
+    - patient care
+    - home health
+    - hospice
+    - pediatric
+    - infusion
+    - transplant
+    - marrow
+    - on-call
+    - PRN
+    - technologist
+    - clinical lab
+    - clinical laboratory
+    - acute care
+    - per diem
+    - support tech
+    # Internships & Trainee positions
+    - postdoctoral
+    - intern
+    - co-op
+    # Commercial / Business (not research)
+    - commercial development
+    - commercial director
+    - commercial manager
+    - project manager
+    - program manager
+    - operations manager
+    - director of operations
+    # Hospital & Healthcare administration (not research)
+    - nursing
+    - hospital
+    - ICU
+    - critical care
+    - emergency services
+    - emergency department
+    - emergency medicine
+    - case manager
+    - case management
+    - nutrition
+    - dietary
+    - food scientist
+    - food safety
+    - food science
+    - beverage
+    - college of nursing
+    - wound care
+    - perioperative
+    - labor and delivery
+    - NICU
+    - chief nursing
+    - bedside
+    - inpatient
+    - surgical services
+    - rehabilitation
+    - radiology
+    - medical records
+    - health information
+    - infection control
+    - utilization review
+    - discharge planning
+    - admissions director
+    - urgent care
+    # Legal & Creative (not research)
+    - attorney
+    - counsel
+    - paralegal
+    - creative director
+    # Education administration (not research)
+    - financial aid
+    - genealogy
+    # Non-pharma science & education
+    - measurement science
+    - social science
+    - imaging science
+    - recreation
+    - school district
+    # General labor & retail
+    - delivery driver
+    - fitness
+    - personal trainer
+    - general manager
+    - car wash
+    - franchise
+    - cashier
+    - barista
+    - retail associate
+    - store manager
+    - warehouse
+    - forklift
+    - food service
+    - restaurant
+    - truck driver
+    - CDL
+    - real estate
+    - customer service
+    - account manager
+
+usajobs:
+  # Register at https://developer.usajobs.gov/ to get an API key
+  # Set these values or use environment variables USAJOBS_API_KEY and USAJOBS_EMAIL
+  api_key: ""  # Get from https://developer.usajobs.gov/
+  email: ""    # Your email registered with USAJobs
+  keywords:
+    - "cell gene therapy"
+    - "molecular biology scientist"
+    - "bioanalytical scientist"
+    - "oncology research"
+    - "scientist pharma"
+    - "scientist biotech"
+    - "CAR-T"
+    - "DMPK"
+    - "director bioanalytical"
+    - "director of science"
+
+adzuna:
+  # Register at https://developer.adzuna.com/ to get app_id and app_key
+  # Set these values or use environment variables ADZUNA_APP_ID and ADZUNA_APP_KEY
+  # Free tier: 25 requests/min, 250 requests/day
+  app_id: ""    # Get from https://developer.adzuna.com/
+  app_key: ""   # Get from https://developer.adzuna.com/
+  keywords:
+    - "cell gene therapy"
+    - "molecular biology scientist"
+    - "bioanalytical scientist"
+    - "oncology research"
+    - "scientist pharma"
+    - "scientist biotech"
+    - "CAR-T"
+    - "DMPK"
+    - "director bioanalytical"
+    - "director of science"
+  results_per_page: 50
+  max_pages: 5
+
+jooble:
+  # Register at https://jooble.org/api/about to get an API key
+  # Set this value or use environment variable JOOBLE_API_KEY
+  api_key: ""  # Get from https://jooble.org/api/about
+  keywords:
+    - "cell gene therapy"
+    - "molecular biology scientist"
+    - "bioanalytical scientist"
+    - "oncology research"
+    - "scientist pharma"
+    - "scientist biotech"
+    - "CAR-T"
+    - "DMPK"
+    - "director bioanalytical"
+    - "director of science"
+  max_pages: 5
+
+output:
+  directory: "data"
+  filename_prefix: "pharma_jobs"
+  formats:
+    - csv
+    - excel
+
+dashboard:
+  port: 8501
+  max_results: 2000
+
+evaluation:
+  # Anthropic API key — set here or via ANTHROPIC_API_KEY env var
+  anthropic_api_key: ""  # Get from https://console.anthropic.com/settings/keys
+  model: "claude-haiku-4-5-20251001"
+  resume_profile: "data/resume_profile.json"
+  evaluations_store: "data/evaluations.json"
+  max_concurrent: 1
+  delay_between_calls: 3.0
+  max_retries: 5
+  default_days: 1
+  description_max_chars: 6000
