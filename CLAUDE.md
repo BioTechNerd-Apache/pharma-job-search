@@ -1,7 +1,7 @@
 # Pharma/Biotech Job Search Tool
 
 ## Project Overview
-Personal Python CLI + Streamlit dashboard for Dr. Ranga Radhakrishnan that aggregates pharma/biotech job listings from 5 sources (Indeed, LinkedIn via JobSpy; USAJobs, Adzuna, Jooble via APIs), with an AI-powered evaluation pipeline that scores jobs against the candidate's resume profile using Claude Haiku. Runs locally on macOS, data syncs via iCloud.
+Personal Python CLI + Streamlit dashboard that aggregates pharma/biotech job listings from 5 sources (Indeed, LinkedIn via JobSpy; USAJobs, Adzuna, Jooble via APIs), with an AI-powered evaluation pipeline that scores jobs against the candidate's resume profile using Claude Haiku. Runs locally on macOS, data syncs via iCloud.
 
 ## Architecture
 ```
@@ -52,7 +52,7 @@ python job_search.py --eval-summary           # Show evaluation stats
 python job_search.py --eval-export results.csv --eval-min-score 60  # Export results
 python job_search.py --re-evaluate            # Force re-evaluation of scored jobs
 
-# Or double-click: "ranga's Job Search.command"
+# Or double-click: "BioTechNerd's Job Search.command"
 ```
 
 ## Key Design Decisions

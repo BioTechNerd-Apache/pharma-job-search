@@ -2,7 +2,7 @@
 
 > **Purpose:** This file preserves the entire codebase so you can reconstruct the project in a new Claude Code session if the chat becomes too long for compacting.
 >
-> **Owner:** Dr. Ranga Radhakrishnan — CGT, Bioanalytical, Molecular Biology, Oncology
+> **Owner:** BioTechNerd — CGT, Bioanalytical, Molecular Biology, Oncology
 >
 > **Created:** 2026-02-10
 > **Updated:** 2026-02-19
@@ -38,7 +38,7 @@ pharma-job-search/
 ├── job_search.py              # CLI entry point (search + evaluation + dashboard)
 ├── config.yaml                # Search terms, API keys, filters, synonyms, evaluation config
 ├── requirements.txt           # Python dependencies
-├── ranga's Job Search.command  # Double-click launcher (dashboard only)
+├── BioTechNerd's Job Search.command  # Double-click launcher (dashboard only)
 ├── CLAUDE.md                  # Project instructions for Claude Code
 ├── PROJECT_REFERENCE.md       # This file
 ├── data/                      # Output directory
@@ -408,7 +408,7 @@ if __name__ == "__main__":
 
 ```yaml
 # Pharma/Biotech Job Search Configuration
-# Tailored for: Dr. Ranga Radhakrishnan - CGT, Bioanalytical, Molecular Biology, Oncology
+# Tailored for: CGT, Bioanalytical, Molecular Biology, Oncology specialist
 
 search:
   terms:
@@ -913,12 +913,12 @@ anthropic>=0.40.0
 
 ---
 
-## File: ranga's Job Search.command
+## File: BioTechNerd's Job Search.command
 
 ```bash
 #!/usr/bin/env bash
 # ============================================================
-# Ranga's Job Search — Dashboard Only (no scraping)
+# BioTechNerd's Job Search — Dashboard Only (no scraping)
 # Double-click to view your latest job search results in Chrome
 # ============================================================
 
@@ -932,7 +932,7 @@ lsof -ti :$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 1
 
 echo "========================================"
-echo "  Ranga's Job Search Dashboard"
+echo "  BioTechNerd's Job Search Dashboard"
 echo "========================================"
 echo ""
 echo "Loading latest data from: $PROJECT_DIR/data/"
@@ -4468,7 +4468,7 @@ def profile_summary(config: EvaluationConfig) -> str:
 
 ```json
 {
-  "name": "Dr. Ranga Radhakrishnan, PhD",
+  "name": "BioTechNerd",
   "years_experience": 18,
   "target_level": ["Senior Scientist", "Principal Scientist", "Associate Director", "Director"],
   "career_anchors": {
