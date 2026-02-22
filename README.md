@@ -71,8 +71,8 @@ python job_search.py --web
 ```
 
 Or double-click the launcher for your platform:
-- **macOS**: `launch_dashboard.command`
-- **Windows**: `launch_dashboard.bat`
+- **macOS**: `BioTechNerd-Apache's Job Search.command`
+- **Windows**: `BioTechNerd-Apache's Job Search.bat`
 
 ## API Keys
 
@@ -188,8 +188,8 @@ Add USAJobs/Adzuna/Jooble keys for more sources. Add an Anthropic key to enable 
 job_search.py                # CLI entry point
 config.yaml                  # Your configuration (not tracked by git)
 config.example.yaml          # Template configuration
-launch_dashboard.command     # macOS dashboard launcher (double-click)
-launch_dashboard.bat         # Windows dashboard launcher (double-click)
+BioTechNerd-Apache's Job Search.command  # macOS dashboard launcher (double-click)
+BioTechNerd-Apache's Job Search.bat     # Windows dashboard launcher (double-click)
 src/
   config.py                  # YAML loader + dataclasses
   aggregator.py              # Orchestrator with parallel scraping

@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM Pharma Job Search — Dashboard Launcher (Windows)
+REM BioTechNerd-Apache's Job Search — Dashboard Launcher (Windows)
 REM Double-click to view your latest job search results in a browser
 REM ============================================================
 
@@ -8,7 +8,7 @@ set PORT=8501
 set URL=http://localhost:%PORT%
 
 echo ========================================
-echo   Pharma Job Search Dashboard
+echo   BioTechNerd-Apache's Job Search Dashboard
 echo ========================================
 echo.
 echo Loading latest data from: %~dp0data\

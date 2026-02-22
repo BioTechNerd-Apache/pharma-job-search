@@ -38,7 +38,7 @@ pharma-job-search/
 ├── job_search.py              # CLI entry point (search + evaluation + dashboard)
 ├── config.yaml                # Search terms, API keys, filters, synonyms, evaluation config
 ├── requirements.txt           # Python dependencies
-├── BioTechNerd's Job Search.command  # Double-click launcher (dashboard only)
+├── BioTechNerd-Apache's Job Search.command  # Double-click launcher (dashboard only)
 ├── CLAUDE.md                  # Project instructions for Claude Code
 ├── PROJECT_REFERENCE.md       # This file
 ├── data/                      # Output directory
@@ -913,12 +913,12 @@ anthropic>=0.40.0
 
 ---
 
-## File: BioTechNerd's Job Search.command
+## File: BioTechNerd-Apache's Job Search.command
 
 ```bash
 #!/usr/bin/env bash
 # ============================================================
-# BioTechNerd's Job Search — Dashboard Only (no scraping)
+# BioTechNerd-Apache's Job Search — Dashboard Only (no scraping)
 # Double-click to view your latest job search results in Chrome
 # ============================================================
 
@@ -932,7 +932,7 @@ lsof -ti :$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 1
 
 echo "========================================"
-echo "  BioTechNerd's Job Search Dashboard"
+echo "  BioTechNerd-Apache's Job Search Dashboard"
 echo "========================================"
 echo ""
 echo "Loading latest data from: $PROJECT_DIR/data/"

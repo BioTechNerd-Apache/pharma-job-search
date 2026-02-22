@@ -52,7 +52,7 @@ python job_search.py --eval-summary           # Show evaluation stats
 python job_search.py --eval-export results.csv --eval-min-score 60  # Export results
 python job_search.py --re-evaluate            # Force re-evaluation of scored jobs
 
-# Or double-click: "BioTechNerd's Job Search.command"
+# Or double-click: "BioTechNerd-Apache's Job Search.command"
 ```
 
 ## Key Design Decisions
