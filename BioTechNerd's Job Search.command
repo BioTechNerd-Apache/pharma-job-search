@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# Ranga's Job Search — Dashboard Only (no scraping)
+# BioTechNerd's Job Search — Dashboard Only (no scraping)
 # Double-click to view your latest job search results in Chrome
 # ============================================================
 
@@ -14,7 +14,7 @@ lsof -ti :$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 1
 
 echo "========================================"
-echo "  Ranga's Job Search Dashboard"
+echo "  BioTechNerd's Job Search Dashboard"
 echo "========================================"
 echo ""
 echo "Loading latest data from: $PROJECT_DIR/data/"
