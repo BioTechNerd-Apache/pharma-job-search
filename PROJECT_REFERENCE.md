@@ -821,8 +821,8 @@ search:
 usajobs:
   # Register at https://developer.usajobs.gov/ to get an API key
   # Set these values or use environment variables USAJOBS_API_KEY and USAJOBS_EMAIL
-  api_key: "REDACTED_USAJOBS_KEY"
-  email: "REDACTED_EMAIL"
+  api_key: ""  # Set via USAJOBS_API_KEY env var
+  email: ""  # Set via USAJOBS_EMAIL env var
   keywords:
     - "cell gene therapy"
     - "molecular biology scientist"
@@ -839,8 +839,8 @@ adzuna:
   # Register at https://developer.adzuna.com/ to get app_id and app_key
   # Set these values or use environment variables ADZUNA_APP_ID and ADZUNA_APP_KEY
   # Free tier: 25 requests/min, 250 requests/day
-  app_id: "REDACTED_ADZUNA_APP_ID"
-  app_key: "REDACTED_ADZUNA_APP_KEY"
+  app_id: ""  # Set via ADZUNA_APP_ID env var
+  app_key: ""  # Set via ADZUNA_APP_KEY env var
   keywords:
     - "cell gene therapy"
     - "molecular biology scientist"
@@ -885,7 +885,7 @@ dashboard:
 
 evaluation:
   # Anthropic API key — set here or via ANTHROPIC_API_KEY env var
-  anthropic_api_key: "REDACTED_ANTHROPIC_KEY"
+  anthropic_api_key: "YOUR_ANTHROPIC_API_KEY"
   model: "claude-haiku-4-5-20251001"
   resume_profile: "data/resume_profile.json"
   evaluations_store: "data/evaluations.json"
