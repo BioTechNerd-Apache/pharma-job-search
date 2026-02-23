@@ -19,6 +19,8 @@ class SearchConfig:
     )
     days: int = 7
     results_per_site: int = 100
+    priority_results_per_site: int = 200
+    priority_terms: List[str] = field(default_factory=list)
     delay_between_searches: int = 5
     location: str = "United States"
     country_indeed: str = "USA"
@@ -149,7 +151,9 @@ def build_config(cli_args: Optional[dict] = None) -> AppConfig:
 
     # Apply YAML values
     search_raw = raw.get("search", {})
-    for key in ("terms", "sites", "days", "results_per_site", "delay_between_searches",
+    for key in ("terms", "sites", "days", "results_per_site",
+                "priority_results_per_site", "priority_terms",
+                "delay_between_searches",
                 "location", "country_indeed", "fetch_descriptions",
                 "synonyms", "filter_include", "filter_exclude"):
         if key in search_raw:

@@ -3,12 +3,14 @@
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
 
 import pandas as pd
 
 from .config import AppConfig, SearchConfig
-from .scraper_jobspy import scrape_jobs
+from .scraper_jobspy import scrape_jobs, scrape_single_term
 from .scraper_usajobs import scrape_usajobs
 from .scraper_adzuna import scrape_adzuna
 from .scraper_jooble import scrape_jooble
@@ -146,55 +148,16 @@ def apply_discipline_filter(df: pd.DataFrame, search_config: SearchConfig) -> pd
     return df.reset_index(drop=True)
 
 
-def _scrape_indeed(config):
-    """Wrapper to run JobSpy scraper for Indeed only."""
-    df = scrape_jobs(config.search, site="indeed")
-    if not df.empty:
-        df = normalize_jobspy_df(df)
-    return ("Indeed", df)
-
-
-def _scrape_linkedin(config):
-    """Wrapper to run JobSpy scraper for LinkedIn only."""
-    df = scrape_jobs(config.search, site="linkedin")
-    if not df.empty:
-        df = normalize_jobspy_df(df)
-    return ("LinkedIn", df)
-
-
-def _scrape_usajobs(config):
-    """Wrapper to run USAJobs scraper and return (name, DataFrame)."""
-    df = scrape_usajobs(config.usajobs, days=config.search.days)
-    if not df.empty:
-        for col in OUTPUT_COLUMNS:
-            if col not in df.columns:
-                df[col] = None
-        df = df[OUTPUT_COLUMNS]
-    return ("USAJobs", df)
-
-
-def _scrape_adzuna(config):
-    """Wrapper to run Adzuna scraper and return (name, DataFrame)."""
-    df = scrape_adzuna(config.adzuna, days=config.search.days)
-    if not df.empty:
-        for col in OUTPUT_COLUMNS:
-            if col not in df.columns:
-                df[col] = None
+def _normalize_api_df(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
+    """Normalize an API scraper DataFrame to standard schema."""
+    if df.empty:
+        return df
+    for col in OUTPUT_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    if source_name in ("Adzuna", "Jooble"):
         df["state"] = df["location"].apply(extract_state)
-        df = df[OUTPUT_COLUMNS]
-    return ("Adzuna", df)
-
-
-def _scrape_jooble(config):
-    """Wrapper to run Jooble scraper and return (name, DataFrame)."""
-    df = scrape_jooble(config.jooble, days=config.search.days)
-    if not df.empty:
-        for col in OUTPUT_COLUMNS:
-            if col not in df.columns:
-                df[col] = None
-        df["state"] = df["location"].apply(extract_state)
-        df = df[OUTPUT_COLUMNS]
-    return ("Jooble", df)
+    return df[OUTPUT_COLUMNS]
 
 
 def _get_raw_path(config: AppConfig):
@@ -206,10 +169,15 @@ def _get_raw_path(config: AppConfig):
 
 
 def run_search(config: AppConfig, progress_callback=None) -> pd.DataFrame:
-    """Run all scrapers in parallel. Each scraper saves to the master CSV as soon as it finishes.
+    """Run all scrapers via a shared work queue. All 5 workers stay busy.
 
-    Also saves raw normalized data (before filtering/dedup) to a raw intermediate file
-    so that reprocessing can be done without re-scraping.
+    API scrapers (USAJobs, Adzuna, Jooble) run as single tasks and finish fast.
+    JobSpy scrapers (Indeed, LinkedIn) are split into individual (site, term) tasks
+    so that all workers can share the load once API tasks are done.
+
+    Per-site semaphores limit concurrency to 2 workers per site.
+    Per-site delay tracking ensures delay_between_searches between consecutive
+    requests to the same site.
 
     Args:
         config: Application configuration.
@@ -218,58 +186,167 @@ def run_search(config: AppConfig, progress_callback=None) -> pd.DataFrame:
     """
     from .exporter import merge_and_export_csv
 
-    scraper_funcs = [_scrape_indeed, _scrape_linkedin, _scrape_usajobs, _scrape_adzuna, _scrape_jooble]
-    scraper_names = ["Indeed", "LinkedIn", "USAJobs", "Adzuna", "Jooble"]
     csv_lock = threading.Lock()
     raw_lock = threading.Lock()
     total_saved = 0
     raw_path = _get_raw_path(config)
 
+    # Per-site concurrency control: max 2 concurrent workers per site
+    site_semaphores = {
+        "indeed": threading.Semaphore(2),
+        "linkedin": threading.Semaphore(2),
+    }
+
+    # Per-site delay tracking: last request timestamp per site
+    site_last_request = {}
+    site_delay_lock = threading.Lock()
+    delay_seconds = config.search.delay_between_searches
+
+    # Track per-source result counts for progress callback
+    source_counts = {}
+    source_counts_lock = threading.Lock()
+
     # Clear old raw file at the start of a new search
     if raw_path.exists():
         raw_path.unlink()
 
-    # Notify all scrapers starting
+    def _enforce_site_delay(site: str):
+        """Wait if needed to respect delay_between_searches for a site."""
+        with site_delay_lock:
+            last = site_last_request.get(site, 0)
+            elapsed = time.time() - last
+            wait_time = delay_seconds - elapsed
+        if wait_time > 0:
+            logger.info(f"Rate limiting: waiting {wait_time:.1f}s for {site}...")
+            time.sleep(wait_time)
+        with site_delay_lock:
+            site_last_request[site] = time.time()
+
+    def _save_results(source_name: str, df: pd.DataFrame):
+        """Save raw + filtered results (thread-safe). Returns count saved."""
+        nonlocal total_saved
+        if df.empty:
+            return 0
+
+        # Append raw data
+        with raw_lock:
+            header = not raw_path.exists()
+            df.to_csv(raw_path, mode="a", index=False, header=header)
+
+        # Filter and save to master CSV
+        filtered = apply_discipline_filter(df, config.search)
+        if not filtered.empty:
+            with csv_lock:
+                merge_and_export_csv(filtered, config)
+            total_saved += len(filtered)
+            logger.info(f"{source_name}: saved {len(filtered)} jobs to master CSV")
+
+        return len(df)
+
+    def _run_api_scraper(name, scraper_func, *args):
+        """Run an API scraper (USAJobs/Adzuna/Jooble) as a single task."""
+        try:
+            df = scraper_func(*args)
+            df = _normalize_api_df(df, name)
+            count = _save_results(name, df)
+            logger.info(f"{name} returned {count} results")
+            return (name, count)
+        except Exception as e:
+            logger.error(f"{name} scraper failed: {e}")
+            return (name, 0)
+
+    def _run_jobspy_term(site: str, term: str):
+        """Run a single (site, term) JobSpy scrape with concurrency + delay control."""
+        sem = site_semaphores.get(site)
+        if sem:
+            sem.acquire()
+        try:
+            _enforce_site_delay(site)
+            df = scrape_single_term(config.search, site, term)
+            if not df.empty:
+                df = normalize_jobspy_df(df)
+                count = _save_results(site.capitalize(), df)
+            else:
+                count = 0
+            return (site, term, count)
+        except Exception as e:
+            logger.warning(f"Error scraping {site} for '{term}': {e}")
+            return (site, term, 0)
+        finally:
+            if sem:
+                sem.release()
+
+    # Build the work queue
+    # 1. API scrapers (fast — these go first)
+    api_tasks = []
+    api_tasks.append(("USAJobs", scrape_usajobs, config.usajobs, config.search.days))
+    api_tasks.append(("Adzuna", scrape_adzuna, config.adzuna, config.search.days))
+    api_tasks.append(("Jooble", scrape_jooble, config.jooble, config.search.days))
+
+    # 2. JobSpy (site, term) pairs — interleaved so both sites get worked on simultaneously
+    jobspy_sites = [s for s in config.search.sites if s in ("indeed", "linkedin")]
+    terms = config.search.terms
+    jobspy_tasks = []
+    for i, term in enumerate(terms):
+        for site in jobspy_sites:
+            jobspy_tasks.append((site, term))
+
+    total_tasks = len(api_tasks) + len(jobspy_tasks)
+    logger.info(f"=== Work queue: {len(api_tasks)} API tasks + {len(jobspy_tasks)} JobSpy tasks ({total_tasks} total) ===")
+
+    # Notify all sources starting
+    all_sources = ["Indeed", "LinkedIn", "USAJobs", "Adzuna", "Jooble"]
     if progress_callback:
-        for name in scraper_names:
+        for name in all_sources:
             progress_callback(name, "starting", count=0)
 
-    logger.info("=== Starting all scrapers in parallel ===")
+    # Track which sources have reported done
+    source_done_counts = {s: 0 for s in all_sources}
+    # Expected counts: API scrapers = 1 task each, JobSpy = number of terms per site
+    source_expected = {}
+    for name in ["USAJobs", "Adzuna", "Jooble"]:
+        source_expected[name] = 1
+    for site in jobspy_sites:
+        source_expected[site.capitalize()] = len(terms)
 
     with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_name = {}
-        for func, name in zip(scraper_funcs, scraper_names):
-            future = executor.submit(func, config)
-            future_to_name[future] = name
+        future_to_label = {}
 
-        for future in as_completed(future_to_name):
-            name = future_to_name[future]
+        # Submit API tasks first (they finish fast)
+        for name, func, *args in api_tasks:
+            future = executor.submit(_run_api_scraper, name, func, *args)
+            future_to_label[future] = ("api", name)
+
+        # Submit all JobSpy (site, term) tasks
+        for site, term in jobspy_tasks:
+            future = executor.submit(_run_jobspy_term, site, term)
+            future_to_label[future] = ("jobspy", site.capitalize())
+
+        for future in as_completed(future_to_label):
+            task_type, source_name = future_to_label[future]
             try:
-                scraper_name, df = future.result()
-                count = len(df) if not df.empty else 0
+                result = future.result()
+                if task_type == "api":
+                    _, count = result
+                else:
+                    _, _, count = result
 
-                if not df.empty:
-                    # Append raw normalized data to intermediate file (before filtering/dedup)
-                    with raw_lock:
-                        header = not raw_path.exists()
-                        df.to_csv(raw_path, mode="a", index=False, header=header)
-                        logger.info(f"{scraper_name}: appended {len(df)} raw rows to {raw_path.name}")
+                # Track per-source completion for progress callback
+                source_done_counts[source_name] = source_done_counts.get(source_name, 0) + 1
+                with source_counts_lock:
+                    source_counts[source_name] = source_counts.get(source_name, 0) + count
 
-                    # Filter and save to master CSV (thread-safe)
-                    filtered = apply_discipline_filter(df, config.search)
-                    if not filtered.empty:
-                        with csv_lock:
-                            merge_and_export_csv(filtered, config)
-                        total_saved += len(filtered)
-                        logger.info(f"{scraper_name}: saved {len(filtered)} jobs to master CSV")
+                expected = source_expected.get(source_name, 1)
+                if source_done_counts[source_name] >= expected and progress_callback:
+                    total_for_source = source_counts.get(source_name, 0)
+                    progress_callback(source_name, "done", count=total_for_source)
 
-                logger.info(f"{scraper_name} returned {count} results")
-                if progress_callback:
-                    progress_callback(scraper_name, "done", count=count)
             except Exception as e:
-                logger.error(f"{name} scraper failed: {e}")
-                if progress_callback:
-                    progress_callback(name, "done", count=0)
+                logger.error(f"{source_name} task failed: {e}")
+                source_done_counts[source_name] = source_done_counts.get(source_name, 0) + 1
+                expected = source_expected.get(source_name, 1)
+                if source_done_counts[source_name] >= expected and progress_callback:
+                    progress_callback(source_name, "done", count=0)
 
     if total_saved == 0:
         logger.warning("No results from any source.")
