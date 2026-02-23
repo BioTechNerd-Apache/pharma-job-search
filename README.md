@@ -1,6 +1,29 @@
 # Pharma/Biotech Job Search Tool
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/BioTechNerd-Apache/pharma-job-search)](https://github.com/BioTechNerd-Apache/pharma-job-search/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/BioTechNerd-Apache/pharma-job-search)](https://github.com/BioTechNerd-Apache/pharma-job-search/commits/main)
+
 A Python CLI + Streamlit dashboard that aggregates pharma/biotech job listings from 5 sources and uses AI to score them against your resume profile.
+
+## How It Works
+
+```
+1. SEARCH          2. FILTER           3. EVALUATE          4. DASHBOARD
+
+Scrape 5 job   ->  Dedup + title   ->  Rule pre-filter  ->  Browse, sort,
+boards in          keyword filter       + Claude Haiku       and review in
+parallel           (keep relevant)      scores job fit       Streamlit UI
+```
+
+**Search** across Indeed, LinkedIn, USAJobs, Adzuna, and Jooble simultaneously. **Filter** with 3-layer dedup and configurable discipline keywords. **Evaluate** with a 2-stage AI pipeline that skips obvious mismatches and scores the rest against your resume. **Review** everything in an interactive dashboard with color-coded fit scores.
+
+## Screenshots
+
+![Job Listings Tab](assets/Job%20Listing.png)
+
+![Evaluation Results Tab](assets/Job%20Evaluation.png)
 
 ## Features
 
@@ -11,6 +34,48 @@ A Python CLI + Streamlit dashboard that aggregates pharma/biotech job listings f
 - **Interactive dashboard**: Streamlit UI with AG Grid for browsing, filtering, and reviewing jobs
 - **Rolling data**: Merges new results into a master CSV/Excel file, preserving your review history
 - **Repost detection**: Tracks when jobs are reposted across sources
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Sources
+        A1[Indeed]
+        A2[LinkedIn]
+        A3[USAJobs]
+        A4[Adzuna]
+        A5[Jooble]
+    end
+
+    subgraph Engine["Parallel Scraping Engine"]
+        Q[Shared Work Queue<br/>5 workers]
+        S[Per-site Semaphore<br/>max 2 concurrent]
+    end
+
+    subgraph Pipeline["Processing Pipeline"]
+        N[Normalize] --> F[Discipline Filter<br/>title keywords]
+        F --> D[3-Layer Dedup]
+        D --> CSV[Master CSV]
+    end
+
+    subgraph Eval["AI Evaluation"]
+        P[Rule Pre-filter<br/>~50 skip patterns] --> Desc[Description Fetch<br/>HTML scraping]
+        Desc --> AI[Claude Haiku<br/>fit scoring]
+        AI --> JSON[evaluations.json]
+    end
+
+    A1 & A2 & A3 & A4 & A5 --> Q
+    Q --> S --> N
+    CSV --> P
+
+    subgraph UI["Dashboard"]
+        T1[Job Listings Tab]
+        T2[Evaluation Results Tab]
+    end
+
+    CSV --> T1
+    JSON --> T2
+```
 
 ## Quick Start
 
@@ -215,6 +280,10 @@ data/
   resume_profile.example.json # Template resume profile
   pharma_jobs.csv            # Master job data (generated)
   pharma_jobs.xlsx           # Master job data (generated)
+docs/
+  CLAUDE.md                  # Full project instructions for AI assistants
+  PROJECT_REFERENCE.md       # Complete source code reference
+  PRD.md                     # Product requirements document
 ```
 
 ## Requirements
@@ -222,6 +291,10 @@ data/
 - Python 3.10+
 - macOS, Linux, or Windows
 - See `requirements.txt` for Python dependencies
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up a dev environment, customize for your discipline, and submit changes.
 
 ## License
 
