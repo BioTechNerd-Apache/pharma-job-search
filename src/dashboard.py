@@ -334,11 +334,8 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
             st.bar_chart(state_counts)
 
     # --- AG Grid Table ---
-    grid_header_left, grid_header_right = st.columns([3, 1])
-    with grid_header_left:
-        st.subheader("Job Listings")
-    review_button_placeholder = grid_header_right.empty()
-    st.caption("Select a row, then click 'Mark as Reviewed' at the top right.")
+    st.subheader("Job Listings")
+    st.caption("Select rows with checkboxes, then click a review button.")
 
     display_cols = ["job_code", "title", "company", "location", "state",
                     "date_posted", "reposted_date", "days_since_posted",
@@ -346,6 +343,10 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
                     "reviewed_at"]
     display_cols = [c for c in display_cols if c in df.columns]
     grid_df = df[display_cols].copy()
+    # Deterministic sort prevents visual rearrangement on selectionChanged reruns
+    sort_cols = [c for c in ["date_posted", "job_url"] if c in grid_df.columns]
+    if sort_cols:
+        grid_df = grid_df.sort_values(sort_cols, ascending=[False, True], na_position="last").reset_index(drop=True)
 
     gb = GridOptionsBuilder.from_dataframe(grid_df)
     gb.configure_default_column(filterable=True, sortable=True, resizable=True, filter=True)
@@ -391,6 +392,7 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
     grid_options["defaultColDef"]["floatingFilter"] = True
     grid_options["defaultColDef"]["suppressSizeToFit"] = True
     grid_options["suppressColumnVirtualisation"] = True
+    grid_options["getRowId"] = JsCode("function(params) { return params.data.job_url; }")
 
     grid_response = AgGrid(
         grid_df, gridOptions=grid_options, update_on=["selectionChanged"],
@@ -398,33 +400,52 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
         key=f"job_grid_{st.session_state.grid_version}",
     )
 
+    # Capture selection into session_state immediately (before any rerun shifts rows)
     selected = grid_response.get("selected_rows", None)
     selected_rows = []
     if selected is not None:
         if hasattr(selected, "iterrows"):
-            selected_rows = [row for _, row in selected.iterrows()]
+            selected_rows = [row.to_dict() for _, row in selected.iterrows()]
         elif isinstance(selected, list):
             selected_rows = selected
 
     if selected_rows:
-        urls = [r.get("job_url", "") for r in selected_rows if r.get("job_url", "")]
-        all_reviewed = all(r.get("reviewed_at", "") for r in selected_rows)
-        with review_button_placeholder.container():
-            if all_reviewed:
-                if st.button(f"Undo Review ({len(urls)})", key="jl_unreview_selected"):
-                    for u in urls:
-                        mark_unreviewed(u)
-                    st.session_state.grid_version += 1
-                    st.rerun()
-            else:
-                if st.button(f"Mark as Reviewed ({len(urls)})", key="jl_review_selected", type="primary"):
-                    for u in urls:
-                        mark_reviewed(u)
-                    st.session_state.grid_version += 1
-                    st.rerun()
+        st.session_state.jl_selected = selected_rows
+    elif "jl_selected" not in st.session_state:
+        st.session_state.jl_selected = []
 
-    if len(selected_rows) == 1:
-        row = selected_rows[0]
+    # Use session_state selections for all actions (immune to grid rearrangement)
+    stored = st.session_state.get("jl_selected", [])
+    stored_urls = [r.get("job_url", "") for r in stored if r.get("job_url", "")]
+
+    # Review buttons
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 6])
+    with btn_col1:
+        do_review = st.button(
+            f"Mark as Reviewed ({len(stored_urls)})" if stored_urls else "Mark as Reviewed",
+            key="jl_review_selected", type="primary",
+        )
+    with btn_col2:
+        do_unreview = st.button(
+            f"Undo Review ({len(stored_urls)})" if stored_urls else "Undo Review",
+            key="jl_unreview_selected",
+        )
+
+    if do_review or do_unreview:
+        if not stored_urls:
+            st.warning("No rows selected. Check the boxes next to jobs first.")
+        else:
+            for u in stored_urls:
+                if do_review:
+                    mark_reviewed(u)
+                else:
+                    mark_unreviewed(u)
+            st.session_state.jl_selected = []
+            st.session_state.grid_version += 1
+            st.rerun()
+
+    if len(stored) == 1:
+        row = stored[0]
         st.subheader("Selected Job Details")
         col_a, col_b = st.columns(2)
         with col_a:
@@ -453,8 +474,8 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
             link_parts.append(f"[Apply Direct (Employer Site)]({direct_url})")
         if link_parts:
             st.markdown(" | ".join(link_parts))
-    elif len(selected_rows) > 1:
-        st.info(f"{len(selected_rows)} jobs selected — click 'Mark as Reviewed' above to review them all.")
+    elif len(stored) > 1:
+        st.info(f"{len(stored)} jobs selected — click a review button above.")
 
     # Expandable job descriptions
     st.subheader("Job Descriptions")
@@ -608,10 +629,7 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
         st.metric("Avg Score", avg_score)
 
     # --- AG Grid ---
-    grid_header_left, grid_header_right = st.columns([3, 1])
-    with grid_header_left:
-        st.subheader("Evaluation Results")
-    eval_review_placeholder = grid_header_right.empty()
+    st.subheader("Evaluation Results")
 
     # Prepare display columns
     display_cols = [
@@ -634,9 +652,10 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
 
     grid_df = eval_df[display_cols].copy()
 
-    # Sort by fit_score descending
-    if "fit_score" in grid_df.columns:
-        grid_df = grid_df.sort_values("fit_score", ascending=False).reset_index(drop=True)
+    # Deterministic sort prevents visual rearrangement on selectionChanged reruns
+    sort_cols = [c for c in ["fit_score", "job_url"] if c in grid_df.columns]
+    if sort_cols:
+        grid_df = grid_df.sort_values(sort_cols, ascending=[False, True]).reset_index(drop=True)
 
     gb = GridOptionsBuilder.from_dataframe(grid_df)
     gb.configure_default_column(filterable=True, sortable=True, resizable=True, filter=True)
@@ -693,6 +712,7 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
     grid_options["defaultColDef"]["floatingFilter"] = True
     grid_options["defaultColDef"]["suppressSizeToFit"] = True
     grid_options["suppressColumnVirtualisation"] = True
+    grid_options["getRowId"] = JsCode("function(params) { return params.data.job_url; }")
 
     grid_response = AgGrid(
         grid_df, gridOptions=grid_options, update_on=["selectionChanged"],
@@ -700,35 +720,53 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
         key=f"eval_grid_{st.session_state.eval_grid_version}",
     )
 
+    # Capture selection into session_state immediately (before any rerun shifts rows)
     selected = grid_response.get("selected_rows", None)
     selected_rows = []
     if selected is not None:
         if hasattr(selected, "iterrows"):
-            selected_rows = [row for _, row in selected.iterrows()]
+            selected_rows = [row.to_dict() for _, row in selected.iterrows()]
         elif isinstance(selected, list):
             selected_rows = selected
 
-    # Review buttons
     if selected_rows:
-        urls = [r.get("job_url", "") for r in selected_rows if r.get("job_url", "")]
-        all_reviewed = all(r.get("reviewed_at", "") for r in selected_rows)
-        with eval_review_placeholder.container():
-            if all_reviewed:
-                if st.button(f"Undo Review ({len(urls)})", key="eval_unreview"):
-                    for u in urls:
-                        mark_unreviewed(u)
-                    st.session_state.eval_grid_version += 1
-                    st.rerun()
-            else:
-                if st.button(f"Mark as Reviewed ({len(urls)})", key="eval_review", type="primary"):
-                    for u in urls:
-                        mark_reviewed(u)
-                    st.session_state.eval_grid_version += 1
-                    st.rerun()
+        st.session_state.eval_selected = selected_rows
+    elif "eval_selected" not in st.session_state:
+        st.session_state.eval_selected = []
+
+    # Use session_state selections for all actions (immune to grid rearrangement)
+    stored = st.session_state.get("eval_selected", [])
+    stored_urls = [r.get("job_url", "") for r in stored if r.get("job_url", "")]
+
+    # Review buttons
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 6])
+    with btn_col1:
+        do_review = st.button(
+            f"Mark as Reviewed ({len(stored_urls)})" if stored_urls else "Mark as Reviewed",
+            key="eval_review", type="primary",
+        )
+    with btn_col2:
+        do_unreview = st.button(
+            f"Undo Review ({len(stored_urls)})" if stored_urls else "Undo Review",
+            key="eval_unreview",
+        )
+
+    if do_review or do_unreview:
+        if not stored_urls:
+            st.warning("No rows selected. Check the boxes next to jobs first.")
+        else:
+            for u in stored_urls:
+                if do_review:
+                    mark_reviewed(u)
+                else:
+                    mark_unreviewed(u)
+            st.session_state.eval_selected = []
+            st.session_state.eval_grid_version += 1
+            st.rerun()
 
     # Detail panel for single selected row
-    if len(selected_rows) == 1:
-        row = selected_rows[0]
+    if len(stored) == 1:
+        row = stored[0]
         st.subheader("Evaluation Details")
 
         col_a, col_b = st.columns(2)
@@ -773,8 +811,8 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
                     with st.expander("Full Job Description"):
                         st.markdown(str(desc)[:5000])
 
-    elif len(selected_rows) > 1:
-        st.info(f"{len(selected_rows)} jobs selected — click 'Mark as Reviewed' above to review them all.")
+    elif len(stored) > 1:
+        st.info(f"{len(stored)} jobs selected — click a review button above.")
 
 
 # ---------------------------------------------------------------------------
