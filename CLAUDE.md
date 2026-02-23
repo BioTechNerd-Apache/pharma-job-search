@@ -10,11 +10,11 @@ config.yaml                # Search terms, API keys, filters, synonyms, evaluati
 requirements.txt           # Python dependencies
 src/
   config.py                # YAML loader + dataclasses (AppConfig, EvaluationConfig, etc.)
-  aggregator.py            # Orchestrator: ThreadPoolExecutor(5), normalize, filter
+  aggregator.py            # Orchestrator: shared work queue, per-site semaphores, normalize, filter
   dedup.py                 # 3-layer dedup: URL, fuzzy (company+title+state), cross-source
   exporter.py              # CSV/Excel merge-on-save to single master file
   dashboard.py             # Streamlit UI with AG Grid — 2 tabs: Job Listings + Evaluations
-  scraper_jobspy.py        # Indeed/LinkedIn via python-jobspy (run as separate parallel tasks)
+  scraper_jobspy.py        # Indeed/LinkedIn via python-jobspy (single-term + batch modes)
   scraper_usajobs.py       # USAJobs REST API
   scraper_adzuna.py        # Adzuna REST API
   scraper_jooble.py        # Jooble REST API (key currently blank)
@@ -60,12 +60,28 @@ python job_search.py --re-evaluate            # Force re-evaluation of scored jo
 - **Discipline filter**: Both include AND exclude filters match job **title only** (not description). This prevents false positives from keywords in descriptions.
 - **Reviewed-job preservation**: Reviewed jobs get +1000 richness boost in dedup so they always survive when duplicates are merged.
 - **Dedup layers**: (1) exact URL after stripping tracking params, (2) fuzzy key = normalized(company|title|state), (3) cross-source = same title + company similarity check including known job board detection.
-- **Progressive save**: Each scraper saves to master CSV immediately on completion (thread-safe via locks), not waiting for all scrapers to finish.
+- **Progressive save**: Each completed (site, term) task saves to master CSV immediately (thread-safe via locks), not waiting for all tasks to finish.
 - **Repost detection**: All date_posted values from duplicate groups are collected and stored in reposted_date column.
 - **iCloud sync**: The .command launcher uses `brctl download` to force iCloud to download data files before starting the dashboard.
 - **Evaluation pipeline**: 2-stage design — Stage 1 (rule-based pre-filter) skips obvious mismatches without API cost, Stage 2 (Claude Haiku) scores remaining jobs against resume profile.
 - **Description enrichment**: Stage 1.5 fetches full job descriptions from URLs for jobs with missing/thin descriptions before sending to Claude API.
 - **Evaluation persistence**: Results stored in evaluations.json keyed by job_url to prevent re-evaluation; `--re-evaluate` flag overrides this.
+- **Tiered results_per_site**: Broad search terms (defined in `priority_terms`) request `priority_results_per_site` (200) results; narrow terms use `results_per_site` (100). Prevents relevant jobs from falling outside the top 100 for competitive terms.
+- **Parallel work queue**: Instead of 1 worker per site (3 idle after API scrapers finish in ~2 min), all 5 workers share a queue of individual `(site, term)` tasks. API scrapers (USAJobs, Adzuna, Jooble) run first as single tasks, then all workers process interleaved Indeed/LinkedIn `(site, term)` pairs. Per-site `Semaphore(2)` caps concurrency; per-site delay tracking enforces `delay_between_searches` spacing. Roughly 2x faster for the Indeed/LinkedIn portion.
+
+## Scraping Architecture
+
+```
+ThreadPoolExecutor(5 workers) pulling from shared work queue:
+
+  [USAJobs, Adzuna, Jooble]                    ← 3 API tasks (finish in seconds)
+  [(indeed, term1), (linkedin, term1),          ← 134 JobSpy tasks (67 terms × 2 sites)
+   (indeed, term2), (linkedin, term2), ...]        interleaved for balanced load
+
+  Per-site semaphore: max 2 concurrent workers per site
+  Per-site delay: 5s between consecutive calls to same site
+  Each completed task: normalize → discipline filter → save to master CSV
+```
 
 ## Evaluation Pipeline Detail
 
@@ -88,9 +104,10 @@ python job_search.py --re-evaluate            # Force re-evaluation of scored jo
 
 ## Important Patterns
 
-- All scrapers return DataFrames with a standard 15-column schema defined in `aggregator.py:OUTPUT_COLUMNS`
+- All scrapers return DataFrames with a standard 16-column schema defined in `aggregator.py:OUTPUT_COLUMNS`
 - API credentials are in `config.yaml` with environment variable fallbacks (USAJOBS_API_KEY, ADZUNA_APP_ID, ANTHROPIC_API_KEY, etc.)
-- Search terms auto-expand via synonym groups defined in config.yaml
+- Search terms auto-expand via synonym groups defined in config.yaml; ~11 priority terms get 200 results per site (others get 100)
+- `scrape_single_term()` handles one (site, term) pair; `scrape_jobs()` retained for backward compatibility
 - Company name normalization strips 40+ stop words (Inc, LLC, Pharmaceuticals, etc.) for matching
 - 50+ known job boards/staffing agencies are recognized for cross-source dedup
 - Python 3.14 is hardcoded in the .command launcher
