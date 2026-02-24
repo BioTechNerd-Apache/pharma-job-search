@@ -53,6 +53,7 @@ python job_search.py                    # Full search
 python job_search.py --days 1           # Last 24hrs
 python job_search.py --reprocess        # Re-filter/dedup from raw data (no scraping)
 python job_search.py --web              # Dashboard only
+python job_search.py --create-shortcut  # Create desktop shortcut
 
 # Evaluation
 python job_search.py --evaluate               # Scrape + evaluate new jobs

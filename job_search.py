@@ -3,6 +3,9 @@
 
 import argparse
 import logging
+import platform
+import shutil
+import stat
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -33,6 +36,7 @@ Examples:
   python job_search.py --web                    # Open dashboard only (no new scrape)
   python job_search.py --terms "DMPK scientist" "bioanalytical" --days 7
   python job_search.py --extra-terms "viral vector" "CAR-T"
+  python job_search.py --create-shortcut             # Create desktop shortcut
 
 Evaluation:
   python job_search.py --evaluate               # Scrape + evaluate new jobs (default: last 1 day)
@@ -88,6 +92,10 @@ Evaluation:
     parser.add_argument("--setup", type=str, metavar="RESUME_FILE",
                         help="Run interactive setup wizard with a resume file (PDF, DOCX, or TXT)")
 
+    # Shortcut
+    parser.add_argument("--create-shortcut", action="store_true",
+                        help="Create a desktop shortcut to launch the dashboard")
+
     return parser.parse_args()
 
 
@@ -100,6 +108,81 @@ def launch_dashboard():
         str(dashboard_path),
         "--server.headless", "true",
     ])
+
+
+def _get_launch_command() -> str:
+    """Return the command to launch the dashboard, depending on install method."""
+    if shutil.which("pharma-job-search"):
+        return "pharma-job-search --web"
+    return f"{sys.executable} {Path(__file__).resolve()} --web"
+
+
+def _create_macos_shortcut(launch_cmd: str) -> bool:
+    """Create a .command shortcut on macOS Desktop."""
+    shortcut = Path.home() / "Desktop" / "Pharma Job Search.command"
+    shortcut.write_text(
+        f"#!/bin/bash\n"
+        f"# Pharma/Biotech Job Search Dashboard launcher\n"
+        f"{launch_cmd} &\n"
+        f"sleep 3\n"
+        f"open http://localhost:8501\n"
+    )
+    shortcut.chmod(shortcut.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return True
+
+
+def _create_windows_shortcut(launch_cmd: str) -> bool:
+    """Create a .bat shortcut on Windows Desktop."""
+    shortcut = Path.home() / "Desktop" / "Pharma Job Search.bat"
+    shortcut.write_text(
+        f"@echo off\r\n"
+        f"REM Pharma/Biotech Job Search Dashboard launcher\r\n"
+        f"start \"\" {launch_cmd}\r\n"
+        f"timeout /t 5 /nobreak >nul\r\n"
+        f"start http://localhost:8501\r\n"
+    )
+    return True
+
+
+def _create_linux_shortcut(launch_cmd: str) -> bool:
+    """Create a .desktop shortcut on Linux Desktop."""
+    shortcut = Path.home() / "Desktop" / "pharma-job-search.desktop"
+    shortcut.write_text(
+        f"[Desktop Entry]\n"
+        f"Type=Application\n"
+        f"Name=Pharma Job Search\n"
+        f"Comment=Launch the Pharma/Biotech Job Search Dashboard\n"
+        f"Exec={launch_cmd}\n"
+        f"Terminal=true\n"
+        f"Categories=Utility;\n"
+    )
+    shortcut.chmod(shortcut.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return True
+
+
+def create_shortcut() -> bool:
+    """Create a platform-appropriate desktop shortcut to launch the dashboard."""
+    launch_cmd = _get_launch_command()
+    system = platform.system()
+
+    try:
+        if system == "Darwin":
+            success = _create_macos_shortcut(launch_cmd)
+        elif system == "Windows":
+            success = _create_windows_shortcut(launch_cmd)
+        elif system == "Linux":
+            success = _create_linux_shortcut(launch_cmd)
+        else:
+            logger.error(f"Unsupported platform: {system}")
+            return False
+    except OSError as e:
+        logger.error(f"Failed to create shortcut: {e}")
+        return False
+
+    if success:
+        desktop = Path.home() / "Desktop"
+        logger.info(f"Desktop shortcut created at {desktop}")
+    return success
 
 
 def cli_progress_callback(scraper_name, status, count=0):
@@ -229,6 +312,11 @@ def main():
         cli_overrides["sites"] = args.sites
     if args.fetch_descriptions is not None:
         cli_overrides["fetch_descriptions"] = args.fetch_descriptions
+
+    # --create-shortcut: create desktop shortcut (no config needed)
+    if args.create_shortcut:
+        success = create_shortcut()
+        sys.exit(0 if success else 1)
 
     # --setup: run setup wizard before anything else
     if args.setup:

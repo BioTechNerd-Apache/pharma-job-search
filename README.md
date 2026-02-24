@@ -157,13 +157,52 @@ python job_search.py --days 1    # Search for jobs posted in the last 24 hours
 python job_search.py --web
 ```
 
-Or double-click the launcher for your platform:
-- **macOS**: `BioTechNerd-Apache's Job Search.command`
-- **Windows**: `BioTechNerd-Apache's Job Search.bat`
-
-> **Desktop shortcut:** Drag and drop the `.command` (Mac) or `.bat` (Windows) file from the project folder onto your Desktop for one-click dashboard access.
-
 > **Dashboard search button:** The dashboard has a "Run New Search" button in the sidebar. Clicking it will scrape all 5 job boards for the last 7 days (the default in `config.yaml`). It does **not** run AI evaluation — that requires the CLI (`python job_search.py --evaluate`). To change the search window, edit the `days` value under `search:` in `config.yaml`.
+
+### 6. Create a desktop shortcut (optional)
+
+```bash
+pharma-job-search --create-shortcut   # pip install
+python job_search.py --create-shortcut # clone install
+```
+
+This creates a platform-appropriate shortcut on your Desktop that launches the dashboard and opens your browser:
+- **macOS**: `~/Desktop/Pharma Job Search.command`
+- **Windows**: `~/Desktop/Pharma Job Search.bat`
+- **Linux**: `~/Desktop/pharma-job-search.desktop`
+
+<details>
+<summary><b>Manual shortcut creation</b></summary>
+
+**macOS** — save as `~/Desktop/Pharma Job Search.command`, then `chmod +x` it:
+```bash
+#!/bin/bash
+pharma-job-search --web &
+sleep 3
+open http://localhost:8501
+```
+
+**Windows** — save as `~/Desktop/Pharma Job Search.bat`:
+```batch
+@echo off
+start "" pharma-job-search --web
+timeout /t 5 /nobreak >nul
+start http://localhost:8501
+```
+
+**Linux** — save as `~/Desktop/pharma-job-search.desktop`, then `chmod +x` it:
+```ini
+[Desktop Entry]
+Type=Application
+Name=Pharma Job Search
+Exec=pharma-job-search --web
+Terminal=true
+Categories=Utility;
+```
+
+> If you cloned the repo instead of pip-installing, replace `pharma-job-search --web` with `python /path/to/job_search.py --web`.
+
+</details>
 
 ## AI Providers
 
@@ -213,6 +252,7 @@ python job_search.py --days 1           # Last 24 hours
 python job_search.py --days 14          # Last 2 weeks
 python job_search.py --reprocess        # Re-filter/dedup from raw data (no scraping)
 python job_search.py --web              # Launch dashboard only
+python job_search.py --create-shortcut  # Create desktop shortcut
 ```
 
 ### Evaluation Commands
