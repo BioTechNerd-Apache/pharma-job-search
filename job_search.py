@@ -4,6 +4,7 @@
 import argparse
 import logging
 import platform
+import shlex
 import shutil
 import stat
 import subprocess
@@ -111,10 +112,12 @@ def launch_dashboard():
 
 
 def _get_launch_command() -> str:
-    """Return the command to launch the dashboard, depending on install method."""
+    """Return the shell-safe command to launch the dashboard, depending on install method."""
     if shutil.which("pharma-job-search"):
         return "pharma-job-search --web"
-    return f"{sys.executable} {Path(__file__).resolve()} --web"
+    exe = shlex.quote(str(sys.executable))
+    script = shlex.quote(str(Path(__file__).resolve()))
+    return f"{exe} {script} --web"
 
 
 def _create_macos_shortcut(launch_cmd: str) -> bool:
@@ -124,7 +127,11 @@ def _create_macos_shortcut(launch_cmd: str) -> bool:
         f"#!/bin/bash\n"
         f"# Pharma/Biotech Job Search Dashboard launcher\n"
         f"{launch_cmd} &\n"
-        f"sleep 3\n"
+        f"echo 'Waiting for dashboard to start...'\n"
+        f"for i in $(seq 1 30); do\n"
+        f"  curl -s http://localhost:8501 >/dev/null 2>&1 && break\n"
+        f"  sleep 1\n"
+        f"done\n"
         f"open http://localhost:8501\n"
     )
     shortcut.chmod(shortcut.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -138,7 +145,12 @@ def _create_windows_shortcut(launch_cmd: str) -> bool:
         f"@echo off\r\n"
         f"REM Pharma/Biotech Job Search Dashboard launcher\r\n"
         f"start \"\" {launch_cmd}\r\n"
-        f"timeout /t 5 /nobreak >nul\r\n"
+        f"echo Waiting for dashboard to start...\r\n"
+        f":wait_loop\r\n"
+        f"timeout /t 2 /nobreak >nul\r\n"
+        f"curl -s http://localhost:8501 >nul 2>&1 && goto :open_browser\r\n"
+        f"goto :wait_loop\r\n"
+        f":open_browser\r\n"
         f"start http://localhost:8501\r\n"
     )
     return True

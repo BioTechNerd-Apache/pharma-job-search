@@ -178,7 +178,11 @@ This creates a platform-appropriate shortcut on your Desktop that launches the d
 ```bash
 #!/bin/bash
 pharma-job-search --web &
-sleep 3
+echo 'Waiting for dashboard to start...'
+for i in $(seq 1 30); do
+  curl -s http://localhost:8501 >/dev/null 2>&1 && break
+  sleep 1
+done
 open http://localhost:8501
 ```
 
@@ -186,7 +190,12 @@ open http://localhost:8501
 ```batch
 @echo off
 start "" pharma-job-search --web
-timeout /t 5 /nobreak >nul
+echo Waiting for dashboard to start...
+:wait_loop
+timeout /t 2 /nobreak >nul
+curl -s http://localhost:8501 >nul 2>&1 && goto :open_browser
+goto :wait_loop
+:open_browser
 start http://localhost:8501
 ```
 
