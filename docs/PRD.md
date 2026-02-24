@@ -9,9 +9,9 @@
 
 ## 1. Executive Summary
 
-A Python CLI + Streamlit dashboard that aggregates pharma/biotech job listings from 5 job boards, deduplicates them across sources, and uses an AI-powered evaluation pipeline (Claude Haiku) to score each job against the user's resume profile. Designed for scientists and directors in the pharmaceutical/biotech industry who need to efficiently search across multiple platforms and identify the best-fit roles without manual filtering.
+A Python CLI + Streamlit dashboard that aggregates pharma/biotech job listings from 5 job boards, deduplicates them across sources, and uses an AI-powered evaluation pipeline to score each job against the user's resume profile. Supports Anthropic (Claude), OpenAI (GPT), and Ollama (free local models). Includes an AI setup wizard that generates all configuration from a resume. Designed for scientists and directors in the pharmaceutical/biotech industry who need to efficiently search across multiple platforms and identify the best-fit roles without manual filtering.
 
-**Core value proposition**: Search 5 job boards in parallel, eliminate duplicates, and let AI rank every job against your background — all from a single command.
+**Core value proposition**: Upload your resume, let AI generate your config, search 5 job boards in parallel, eliminate duplicates, and let AI rank every job against your background — all from a single command.
 
 ---
 
@@ -175,11 +175,11 @@ ELSE → evaluate (normal priority)
 | FR-5.10 | Timeout protection | 15s per URL |
 | FR-5.11 | Minimum description length | Only accepts descriptions >= 200 chars |
 
-#### Stage 2: Claude API Scoring (`evaluator.py`)
+#### Stage 2: AI Scoring (`evaluator.py`)
 
 | ID | Requirement | Implementation |
 |----|-------------|----------------|
-| FR-5.12 | Score each job against resume profile (0-100) | Claude Haiku API with structured JSON output |
+| FR-5.12 | Score each job against resume profile (0-100) | AI provider (Anthropic/OpenAI/Ollama) via ai_client.py with structured JSON output |
 | FR-5.13 | Classify into fit buckets | strong (70+), moderate (55-69), weak (40-54), poor (<40) |
 | FR-5.14 | Provide recommendation | apply (60+), maybe (45-59), skip (<45) |
 | FR-5.15 | Return matching/missing skills, domain match, reasoning | Structured JSON response parsed from API |
@@ -260,6 +260,7 @@ ELSE → evaluate (normal priority)
 
 | Command | Purpose |
 |---------|---------|
+| `python job_search.py --setup resume.pdf` | AI wizard: generates all config from resume |
 | `python job_search.py` | Full search (default: last 7 days) |
 | `python job_search.py --days N` | Search last N days |
 | `python job_search.py --terms "X" "Y"` | Override search terms |
@@ -424,8 +425,9 @@ The tool has **4 layers of customization**, from easiest to most involved:
 - **main()**: Routes to search/evaluate/reprocess/web based on flags
 
 ### 8.2 `src/config.py` — Configuration
-- **Dataclasses**: SearchConfig, USAJobsConfig, AdzunaConfig, JoobleConfig, OutputConfig, DashboardConfig, EvaluationConfig, AppConfig
-- **build_config()**: Merges YAML + CLI overrides; expands synonyms
+- **Dataclasses**: SearchConfig, USAJobsConfig, AdzunaConfig, JoobleConfig, OutputConfig, DashboardConfig, WizardConfig, EvaluationConfig, AppConfig
+- **WizardConfig**: Separate AI provider config for the setup wizard; falls back to EvaluationConfig if `provider` is empty
+- **build_config()**: Merges YAML + CLI overrides; expands synonyms; loads `wizard:` and `evaluation:` sections
 - **Environment variable fallback**: All API keys check env vars before config values
 
 ### 8.3 `src/aggregator.py` — Scraper Orchestrator
@@ -453,6 +455,7 @@ The tool has **4 layers of customization**, from easiest to most involved:
 ### 8.6 `src/dashboard.py` — Streamlit Dashboard
 - **Tab 1**: Job Listings with AG Grid, filters, review system, metrics
 - **Tab 2**: Evaluation Results with color-coded scores, detail panel
+- **Tab 3**: Setup — AI provider pickers (wizard + evaluation), setup wizard, search config, evaluator patterns, resume profile editor
 - **Shared**: Review tracking (reviewed.json), run-search-from-dashboard
 
 ### 8.7 `src/scraper_jobspy.py` — Indeed/LinkedIn
@@ -522,7 +525,10 @@ The tool has **4 layers of customization**, from easiest to most involved:
 | pyyaml | latest | Config file loading |
 | requests | latest | HTTP client (APIs, description fetching) |
 | beautifulsoup4 | latest | HTML parsing (descriptions) |
-| anthropic | latest | Claude API client |
+| anthropic | latest | Anthropic (Claude) API client |
+| openai | latest | OpenAI / Ollama API client |
+| pdfplumber | latest | PDF resume text extraction |
+| python-docx | latest | DOCX resume text extraction |
 
 **Python**: 3.10+
 **Platforms**: macOS, Linux, Windows
@@ -534,22 +540,26 @@ The tool has **4 layers of customization**, from easiest to most involved:
 ```
 pharma-job-search/
 ├── job_search.py                  # CLI entry point
+├── pyproject.toml                 # Package config (pip installable)
 ├── config.yaml                    # User config (gitignored)
 ├── config.example.yaml            # Template config
 ├── requirements.txt               # Python dependencies
 ├── README.md                      # User documentation
+├── CONTRIBUTING.md                # Contributor guide
 ├── CLAUDE.md                      # Architecture reference
 ├── LICENSE                        # MIT License
-├── launch_dashboard.command       # macOS launcher (double-click)
-├── launch_dashboard.bat           # Windows launcher (double-click)
 ├── .gitignore
 ├── src/
 │   ├── __init__.py
-│   ├── config.py                  # Config loader + dataclasses
+│   ├── config.py                  # Config loader + dataclasses (WizardConfig, EvaluationConfig)
+│   ├── ai_client.py               # Multi-provider AI client (Anthropic, OpenAI, Ollama)
+│   ├── setup_wizard.py            # AI-powered setup wizard (resume → full config)
+│   ├── resume_parser.py           # Resume text extraction (PDF, DOCX, TXT)
+│   ├── pattern_helpers.py         # Regex ↔ display string conversion
 │   ├── aggregator.py              # Scraper orchestrator (ThreadPool)
 │   ├── dedup.py                   # 3-layer deduplication
 │   ├── exporter.py                # CSV/Excel merge-on-save
-│   ├── dashboard.py               # Streamlit UI + AG Grid
+│   ├── dashboard.py               # Streamlit UI + AG Grid (3 tabs)
 │   ├── scraper_jobspy.py          # Indeed/LinkedIn via JobSpy
 │   ├── scraper_usajobs.py         # USAJobs REST API
 │   ├── scraper_adzuna.py          # Adzuna REST API
@@ -560,10 +570,19 @@ pharma-job-search/
 │   └── resume_profile.py          # Resume profile loader
 ├── tests/
 │   ├── __init__.py
-│   └── test_evaluator.py          # Pre-filter unit tests
+│   ├── test_evaluator.py          # Pre-filter unit tests
+│   ├── test_ai_client.py          # Multi-provider AI client tests
+│   ├── test_setup_wizard.py       # Setup wizard tests
+│   ├── test_resume_parser.py      # Resume parser tests
+│   └── test_pattern_helpers.py    # Pattern helper tests
+├── assets/
+│   ├── Job Listing.png            # Screenshot: Job Listings tab
+│   ├── Job Evaluation.png         # Screenshot: Evaluation Results tab
+│   └── Search Setup.png           # Screenshot: Setup tab
 └── data/
     ├── resume_profile.example.json # Template profile
     ├── resume_profile.json         # User profile (gitignored)
+    ├── evaluator_patterns.yaml     # Evaluator patterns (gitignored)
     ├── pharma_jobs.csv             # Master job data (generated)
     ├── pharma_jobs.xlsx            # Master Excel (generated)
     ├── pharma_jobs_raw.csv         # Raw pre-filter data (generated)
@@ -600,4 +619,5 @@ pharma-job-search/
 - Scheduled automated runs (cron/launchd)
 - Historical analytics (score trends, application tracking)
 - Multi-user support with separate profiles
+- Application tracking (applied, interviewing, offered, rejected)
 - Fine-tuned evaluation model for domain-specific scoring
