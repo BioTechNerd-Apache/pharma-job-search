@@ -79,17 +79,17 @@ flowchart LR
 
 ## Quick Start
 
-### 1. Clone and install
+### 1. Install
 
-**macOS / Linux:**
+**One-command install (any platform):**
 ```bash
-git clone https://github.com/BioTechNerd-Apache/pharma-job-search.git
-cd pharma-job-search
-pip install -r requirements.txt
+pip install git+https://github.com/BioTechNerd-Apache/pharma-job-search.git
 ```
 
-**Windows (Command Prompt or PowerShell):**
-```cmd
+This installs all dependencies and creates a `pharma-job-search` CLI command.
+
+**Or clone and install locally:**
+```bash
 git clone https://github.com/BioTechNerd-Apache/pharma-job-search.git
 cd pharma-job-search
 pip install -r requirements.txt
@@ -243,10 +243,10 @@ This tool ships pre-configured for **pharma/biotech scientist** roles. There are
 You can run a basic search with **zero API keys** — Indeed and LinkedIn work immediately via JobSpy:
 
 ```bash
-pip install -r requirements.txt
+pip install git+https://github.com/BioTechNerd-Apache/pharma-job-search.git
 cp config.example.yaml config.yaml
-python job_search.py --days 1          # Scrapes Indeed + LinkedIn
-python job_search.py --web             # View results in dashboard
+pharma-job-search --days 1             # Scrapes Indeed + LinkedIn
+pharma-job-search --web                # View results in dashboard
 ```
 
 Add USAJobs/Adzuna/Jooble keys for more sources. Add an Anthropic key to enable AI evaluation.
@@ -290,7 +290,7 @@ docs/
 
 - Python 3.10+
 - macOS, Linux, or Windows
-- See `requirements.txt` for Python dependencies
+- Dependencies are installed automatically via `pip install`; see `pyproject.toml` or `requirements.txt` for the full list
 
 ## Contributing
 
