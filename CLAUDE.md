@@ -8,5 +8,6 @@ Full project instructions, architecture details, and development reference are i
 - **Config**: `config.yaml` (copy from `config.example.yaml`)
 - **Source code**: `src/`
 - **Tests**: `tests/` — run with `python -m pytest tests/`
+- **Setup wizard**: `python job_search.py --setup resume.pdf`
 - **Dashboard**: `python job_search.py --web`
 - **Full docs**: `docs/CLAUDE.md`, `docs/PROJECT_REFERENCE.md`, `docs/PRD.md`

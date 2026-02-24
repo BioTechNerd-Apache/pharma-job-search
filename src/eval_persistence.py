@@ -18,6 +18,7 @@ class EvaluationStore:
     def __init__(self, config: EvaluationConfig):
         self.path = PROJECT_ROOT / config.evaluations_store
         self.model = config.model
+        self.provider = getattr(config, "provider", "anthropic")
         self._data = self._load()
 
     def _load(self) -> dict:
@@ -34,6 +35,7 @@ class EvaluationStore:
         self._data["metadata"]["last_evaluation_run"] = datetime.now().isoformat()
         self._data["metadata"]["total_evaluated"] = len(self._data["evaluations"])
         self._data["metadata"]["model_used"] = self.model
+        self._data["metadata"]["provider"] = self.provider
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "w") as f:
             json.dump(self._data, f, indent=2)

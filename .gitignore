@@ -5,8 +5,16 @@ config.yaml
 data/*.csv
 data/*.xlsx
 data/*.json
+data/evaluator_patterns.yaml
 !data/resume_profile.example.json
 !data/.gitkeep
+
+# Backup files (personal data)
+*.bak
+*.mybackup
+
+# Streamlit local config
+.streamlit/
 
 # Python
 __pycache__/

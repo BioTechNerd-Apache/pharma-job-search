@@ -3,10 +3,20 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.evaluator import prefilter_job
+from src.evaluator import prefilter_job, reload_patterns
+
+
+@pytest.fixture(autouse=True)
+def use_builtin_patterns():
+    """Force builtin patterns so tests aren't affected by local YAML overrides."""
+    reload_patterns("/nonexistent/path.yaml")
+    yield
+    reload_patterns()
 
 
 class TestSkipTitles:

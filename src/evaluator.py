@@ -11,18 +11,66 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import yaml
 
 from .config import EvaluationConfig, PROJECT_ROOT
+from .exporter import get_master_path
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# CSV loading / time-filtering helpers (used by CLI and dashboard)
+# ---------------------------------------------------------------------------
+
+def load_jobs_csv(config) -> pd.DataFrame:
+    """Load the master jobs CSV."""
+    master_path = get_master_path(config.output, "csv")
+    if not master_path.exists():
+        logger.error(f"Master CSV not found: {master_path}")
+        logger.error("Run a search first: python job_search.py")
+        return pd.DataFrame()
+    df = pd.read_csv(master_path, parse_dates=["date_posted"])
+    logger.info(f"Loaded {len(df)} jobs from {master_path}")
+    return df
+
+
+def filter_jobs_by_time(df: pd.DataFrame, eval_since: str = None,
+                        eval_days: int = None, eval_all: bool = False,
+                        default_days: int = 1) -> pd.DataFrame:
+    """Filter jobs DataFrame by time window for evaluation."""
+    if eval_all:
+        logger.info(f"Evaluating all {len(df)} jobs")
+        return df
+
+    if "date_posted" not in df.columns:
+        logger.warning("No date_posted column — evaluating all jobs")
+        return df
+
+    df["date_posted"] = pd.to_datetime(df["date_posted"], errors="coerce")
+
+    if eval_since:
+        cutoff = pd.Timestamp(eval_since)
+    elif eval_days is not None:
+        # Use start-of-day so "--eval-days 1" means "today and yesterday"
+        cutoff = (pd.Timestamp.now().normalize() - pd.Timedelta(days=eval_days - 1))
+    else:
+        cutoff = (pd.Timestamp.now().normalize() - pd.Timedelta(days=default_days - 1))
+
+    has_date = df[df["date_posted"] >= cutoff]
+    no_date = df[df["date_posted"].isna()]
+    filtered = pd.concat([has_date, no_date]).drop_duplicates()
+    logger.info(f"Time filter: {len(has_date)} jobs since {cutoff.strftime('%Y-%m-%d %H:%M')} "
+                f"+ {len(no_date)} with no date = {len(filtered)} total")
+    return filtered
 
 
 # ---------------------------------------------------------------------------
 # Stage 1: Rule-based pre-filter
 # ---------------------------------------------------------------------------
 
-# Title patterns that auto-skip (case-insensitive regex)
-SKIP_TITLE_PATTERNS = [
+# Built-in fallback patterns (used when no evaluator_patterns.yaml exists)
+_BUILTIN_SKIP_TITLE_PATTERNS = [
     # Senior leadership (too senior / wrong track)
     r"\bvp\b", r"\bsvp\b", r"\bceo\b", r"\bcfo\b", r"\bcoo\b", r"\bcmo\b",
     r"\bchief\b.*\bofficer\b",
@@ -72,7 +120,7 @@ SKIP_TITLE_PATTERNS = [
 ]
 
 # Description patterns that auto-skip (unless rescued)
-SKIP_DESCRIPTION_PATTERNS = [
+_BUILTIN_SKIP_DESCRIPTION_PATTERNS = [
     r"\bextensive\b.*\bexperience\b.*\bhplc\b",
     r"\bextensive\b.*\bexperience\b.*\blc-ms\b",
     r"\bbioreactor\s+operation\b",
@@ -91,7 +139,7 @@ SKIP_DESCRIPTION_PATTERNS = [
 ]
 
 # Rescue patterns: if description matches these, do NOT skip even if skip_description matched
-RESCUE_PATTERNS = [
+_BUILTIN_RESCUE_PATTERNS = [
     r"\bqpcr\b", r"\brt-qpcr\b", r"\bddpcr\b",
     r"\bflow\s+cytometry\b", r"\bfacs\b",
     r"\bgene\s+therapy\b", r"\bviral\s+vector\b",
@@ -102,7 +150,7 @@ RESCUE_PATTERNS = [
 ]
 
 # Boost patterns: jobs matching these get priority for evaluation
-BOOST_PATTERNS = [
+_BUILTIN_BOOST_PATTERNS = [
     r"\bbioanalytical\b", r"\bbioanalysis\b",
     r"\bgene\s+therapy\b", r"\bcell\s+therapy\b",
     r"\bcar-t\b", r"\bcar\s+t\b",
@@ -121,10 +169,82 @@ def _compile_patterns(patterns: list[str]) -> list[re.Pattern]:
     return [re.compile(p, re.IGNORECASE) for p in patterns]
 
 
-_skip_title_compiled = _compile_patterns(SKIP_TITLE_PATTERNS)
-_skip_desc_compiled = _compile_patterns(SKIP_DESCRIPTION_PATTERNS)
-_rescue_compiled = _compile_patterns(RESCUE_PATTERNS)
-_boost_compiled = _compile_patterns(BOOST_PATTERNS)
+# Public aliases for backward compatibility (tests and external code reference these)
+SKIP_TITLE_PATTERNS = _BUILTIN_SKIP_TITLE_PATTERNS
+SKIP_DESCRIPTION_PATTERNS = _BUILTIN_SKIP_DESCRIPTION_PATTERNS
+RESCUE_PATTERNS = _BUILTIN_RESCUE_PATTERNS
+BOOST_PATTERNS = _BUILTIN_BOOST_PATTERNS
+
+
+def load_evaluator_patterns(yaml_path: str | None = None) -> dict[str, list[str]]:
+    """Load evaluator patterns from YAML file, falling back to built-in defaults.
+
+    Args:
+        yaml_path: Path to evaluator_patterns.yaml. If None, uses default location.
+
+    Returns:
+        Dict with keys: skip_title_patterns, skip_description_patterns,
+        rescue_patterns, boost_patterns — each a list of regex strings.
+    """
+    if yaml_path is None:
+        yaml_path = str(PROJECT_ROOT / "data" / "evaluator_patterns.yaml")
+
+    defaults = {
+        "skip_title_patterns": list(_BUILTIN_SKIP_TITLE_PATTERNS),
+        "skip_description_patterns": list(_BUILTIN_SKIP_DESCRIPTION_PATTERNS),
+        "rescue_patterns": list(_BUILTIN_RESCUE_PATTERNS),
+        "boost_patterns": list(_BUILTIN_BOOST_PATTERNS),
+    }
+
+    if not Path(yaml_path).is_file():
+        return defaults
+
+    try:
+        with open(yaml_path, "r") as f:
+            data = yaml.safe_load(f) or {}
+        result = {}
+        for key in defaults:
+            val = data.get(key)
+            if isinstance(val, list) and val:
+                # Validate each pattern compiles
+                valid = []
+                for p in val:
+                    try:
+                        re.compile(p)
+                        valid.append(p)
+                    except re.error:
+                        logger.warning(f"Invalid regex in {key}: {p!r}, skipping")
+                result[key] = valid
+            else:
+                result[key] = defaults[key]
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to load {yaml_path}: {e}, using built-in patterns")
+        return defaults
+
+
+def _init_compiled_patterns():
+    """Load and compile all patterns. Called at import time and can be refreshed."""
+    patterns = load_evaluator_patterns()
+    return (
+        _compile_patterns(patterns["skip_title_patterns"]),
+        _compile_patterns(patterns["skip_description_patterns"]),
+        _compile_patterns(patterns["rescue_patterns"]),
+        _compile_patterns(patterns["boost_patterns"]),
+    )
+
+
+_skip_title_compiled, _skip_desc_compiled, _rescue_compiled, _boost_compiled = _init_compiled_patterns()
+
+
+def reload_patterns(yaml_path: str | None = None):
+    """Reload patterns from YAML (or built-in defaults). Call after wizard generates new patterns."""
+    global _skip_title_compiled, _skip_desc_compiled, _rescue_compiled, _boost_compiled
+    patterns = load_evaluator_patterns(yaml_path)
+    _skip_title_compiled = _compile_patterns(patterns["skip_title_patterns"])
+    _skip_desc_compiled = _compile_patterns(patterns["skip_description_patterns"])
+    _rescue_compiled = _compile_patterns(patterns["rescue_patterns"])
+    _boost_compiled = _compile_patterns(patterns["boost_patterns"])
 
 
 @dataclass
@@ -263,7 +383,6 @@ NOTE: No specific job requirements are available. Score based ONLY on what the t
 
 async def evaluate_single_job(
     client,
-    model: str,
     system_prompt: str,
     title: str,
     company: str,
@@ -271,14 +390,11 @@ async def evaluate_single_job(
     description_max_chars: int,
     max_retries: int = 5,
 ) -> dict:
-    """Evaluate a single job using the Claude API with retry-with-backoff.
+    """Evaluate a single job using the AI client with retry-with-backoff.
 
-    Retries on rate limit (429) errors with exponential backoff + jitter.
-    The Anthropic SDK has its own retries; this is an additional outer layer
-    that catches failures the SDK couldn't resolve.
+    Retries on rate limit (429) and overloaded errors with exponential backoff + jitter.
+    The underlying SDK may have its own retries; this is an additional outer layer.
     """
-    import anthropic
-
     description_available = bool(description and str(description).strip()
                                   and str(description).lower() != "nan")
     truncated_desc = ""
@@ -292,14 +408,13 @@ async def evaluate_single_job(
     for attempt in range(1, max_retries + 1):
         try:
             response = await asyncio.to_thread(
-                client.messages.create,
-                model=model,
-                max_tokens=1024,
+                client.create_message,
                 system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
+                user_content=user_prompt,
+                max_tokens=1024,
             )
 
-            raw_text = response.content[0].text.strip()
+            raw_text = response.text.strip()
             # Strip markdown fences if present
             if raw_text.startswith("```"):
                 raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
@@ -317,26 +432,24 @@ async def evaluate_single_job(
             result["fit_score"] = int(result.get("fit_score", 0))
 
             result["description_available"] = description_available
-            result["input_tokens"] = response.usage.input_tokens
-            result["output_tokens"] = response.usage.output_tokens
+            result["input_tokens"] = response.input_tokens
+            result["output_tokens"] = response.output_tokens
             return result
-
-        except anthropic.RateLimitError as e:
-            if attempt == max_retries:
-                logger.warning(f"Rate limit exhausted after {max_retries} retries for '{title}'")
-                return _error_result(title, f"Rate limit after {max_retries} retries", description_available)
-            # Exponential backoff: 5s, 10s, 20s, 40s... + random jitter
-            delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 2)
-            logger.info(f"Rate limited on '{title}' (attempt {attempt}/{max_retries}), "
-                        f"backing off {delay:.1f}s")
-            await asyncio.sleep(delay)
 
         except json.JSONDecodeError as e:
             logger.warning(f"JSON parse error for '{title}': {e}")
             return _error_result(title, f"JSON parse error: {e}", description_available)
 
-        except anthropic.APIStatusError as e:
-            if e.status_code == 529:  # Overloaded
+        except Exception as e:
+            if client.is_rate_limit_error(e):
+                if attempt == max_retries:
+                    logger.warning(f"Rate limit exhausted after {max_retries} retries for '{title}'")
+                    return _error_result(title, f"Rate limit after {max_retries} retries", description_available)
+                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 2)
+                logger.info(f"Rate limited on '{title}' (attempt {attempt}/{max_retries}), "
+                            f"backing off {delay:.1f}s")
+                await asyncio.sleep(delay)
+            elif client.is_overloaded_error(e):
                 if attempt == max_retries:
                     logger.warning(f"API overloaded after {max_retries} retries for '{title}'")
                     return _error_result(title, f"API overloaded after {max_retries} retries", description_available)
@@ -347,10 +460,6 @@ async def evaluate_single_job(
             else:
                 logger.warning(f"API error for '{title}': {e}")
                 return _error_result(title, str(e), description_available)
-
-        except Exception as e:
-            logger.warning(f"API error for '{title}': {e}")
-            return _error_result(title, str(e), description_available)
 
     return _error_result(title, "Max retries exceeded", description_available)
 
@@ -373,7 +482,7 @@ async def evaluate_batch(
     config: EvaluationConfig,
     progress_callback=None,
 ) -> list[dict]:
-    """Evaluate a batch of jobs using the Claude API with rate limiting.
+    """Evaluate a batch of jobs using the configured AI provider with rate limiting.
 
     Args:
         jobs_df: DataFrame with columns: job_url, title, company, description
@@ -383,17 +492,14 @@ async def evaluate_batch(
     Returns:
         List of dicts, each with job_url + evaluation fields
     """
-    try:
-        import anthropic
-    except ImportError:
-        raise ImportError("anthropic package required. Install with: pip install anthropic")
+    from .ai_client import create_ai_client
 
-    api_key = config.get_api_key()
-    if not api_key:
-        raise ValueError("No Anthropic API key found. Set ANTHROPIC_API_KEY env var or anthropic_api_key in config.yaml")
+    if not config.enabled:
+        provider = getattr(config, "provider", "anthropic")
+        raise ValueError(f"No API key found for provider '{provider}'. "
+                         f"Set the appropriate API key in config.yaml or environment variables.")
 
-    # Configure SDK with its own retry layer (handles transient errors internally)
-    client = anthropic.Anthropic(api_key=api_key, max_retries=config.max_retries)
+    client = create_ai_client(config)
     profile = load_resume_profile(config)
     system_prompt = _build_system_prompt(profile)
 
@@ -407,7 +513,6 @@ async def evaluate_batch(
         async with semaphore:
             result = await evaluate_single_job(
                 client=client,
-                model=config.model,
                 system_prompt=system_prompt,
                 title=str(row.get("title", "")),
                 company=str(row.get("company", "")),
@@ -680,12 +785,20 @@ def estimate_cost(jobs_df: pd.DataFrame, config: EvaluationConfig, store) -> dic
         else:
             evaluate_count += 1
 
-    # Haiku pricing: $0.80/M input, $4.00/M output (as of 2025)
+    from .ai_client import get_model_pricing
+
     avg_input_tokens = 2500
     avg_output_tokens = 300
-    input_cost = (evaluate_count * avg_input_tokens / 1_000_000) * 0.80
-    output_cost = (evaluate_count * avg_output_tokens / 1_000_000) * 4.00
-    total_cost = input_cost + output_cost
+
+    provider = getattr(config, "provider", "anthropic")
+    pricing = get_model_pricing(provider, config.model)
+    if pricing:
+        input_rate, output_rate = pricing
+        input_cost = (evaluate_count * avg_input_tokens / 1_000_000) * input_rate
+        output_cost = (evaluate_count * avg_output_tokens / 1_000_000) * output_rate
+        total_cost = round(input_cost + output_cost, 4)
+    else:
+        total_cost = "N/A"
 
     return {
         "total_jobs": total,
@@ -694,5 +807,5 @@ def estimate_cost(jobs_df: pd.DataFrame, config: EvaluationConfig, store) -> dic
         "to_evaluate": evaluate_count,
         "estimated_input_tokens": evaluate_count * avg_input_tokens,
         "estimated_output_tokens": evaluate_count * avg_output_tokens,
-        "estimated_cost_usd": round(total_cost, 4),
+        "estimated_cost_usd": total_cost,
     }

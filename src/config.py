@@ -106,7 +106,10 @@ class DashboardConfig:
 
 @dataclass
 class EvaluationConfig:
-    anthropic_api_key: str = ""
+    provider: str = "anthropic"  # "anthropic", "openai", "ollama"
+    api_key: str = ""  # Generic key (preferred over anthropic_api_key)
+    base_url: str = ""  # For Ollama or custom endpoints
+    anthropic_api_key: str = ""  # Legacy field, kept for backward compat
     model: str = "claude-haiku-4-5-20251001"
     resume_profile: str = "data/resume_profile.json"
     evaluations_store: str = "data/evaluations.json"
@@ -115,13 +118,61 @@ class EvaluationConfig:
     max_retries: int = 5
     default_days: int = 1
     description_max_chars: int = 6000
+    evaluator_patterns: str = "data/evaluator_patterns.yaml"
 
     def get_api_key(self) -> str:
-        return self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        # 1. New generic api_key field
+        if self.api_key:
+            return self.api_key
+        # 2. Legacy anthropic_api_key
+        if self.anthropic_api_key:
+            return self.anthropic_api_key
+        # 3. Env var based on provider
+        env_map = {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
+        }
+        env_var = env_map.get(self.provider, "")
+        if env_var:
+            return os.environ.get(env_var, "")
+        return ""
 
     @property
     def enabled(self) -> bool:
+        # Ollama doesn't need an API key
+        if self.provider == "ollama":
+            return True
         return bool(self.get_api_key())
+
+
+@dataclass
+class WizardConfig:
+    """AI provider config for the setup wizard (resume parsing, config generation).
+
+    If provider is empty, falls back to the evaluation config — fully backward compatible.
+    """
+    provider: str = ""
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+
+    def get_api_key(self) -> str:
+        if self.api_key:
+            return self.api_key
+        env_map = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+        env_var = env_map.get(self.provider, "")
+        return os.environ.get(env_var, "") if env_var else ""
+
+    @property
+    def enabled(self) -> bool:
+        if self.provider == "ollama":
+            return True
+        return bool(self.get_api_key())
+
+    @property
+    def is_configured(self) -> bool:
+        """True if wizard has its own provider set (not falling back to eval)."""
+        return bool(self.provider)
 
 
 @dataclass
@@ -132,6 +183,7 @@ class AppConfig:
     jooble: JoobleConfig = field(default_factory=JoobleConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    wizard: WizardConfig = field(default_factory=WizardConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 
 
@@ -184,10 +236,16 @@ def build_config(cli_args: Optional[dict] = None) -> AppConfig:
         if key in dashboard_raw:
             setattr(config.dashboard, key, dashboard_raw[key])
 
+    wizard_raw = raw.get("wizard", {})
+    for key in ("provider", "api_key", "base_url", "model"):
+        if key in wizard_raw:
+            setattr(config.wizard, key, wizard_raw[key])
+
     evaluation_raw = raw.get("evaluation", {})
-    for key in ("anthropic_api_key", "model", "resume_profile", "evaluations_store",
+    for key in ("provider", "api_key", "base_url",
+                "anthropic_api_key", "model", "resume_profile", "evaluations_store",
                 "max_concurrent", "delay_between_calls", "max_retries", "default_days",
-                "description_max_chars"):
+                "description_max_chars", "evaluator_patterns"):
         if key in evaluation_raw:
             setattr(config.evaluation, key, evaluation_raw[key])
 

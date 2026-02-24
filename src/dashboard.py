@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
-from src.config import build_config, PROJECT_ROOT
+from src.config import build_config, PROJECT_ROOT, DEFAULT_CONFIG_PATH
 from src.exporter import get_master_path
 
 st.set_page_config(
@@ -27,6 +28,87 @@ st.set_page_config(
     page_icon="\U0001f52c",
     layout="wide",
 )
+
+# -- Custom CSS for clean light theme polish --
+st.markdown("""
+<style>
+/* ---- Top-level navigation tabs: large pill-style buttons ---- */
+.stMainBlockContainer > div > .stTabs > [data-baseweb="tab-list"] {
+    gap: 0.25rem;
+    border-bottom: 2px solid #E2E8F0;
+    padding-bottom: 0;
+}
+.stMainBlockContainer > div > .stTabs > [data-baseweb="tab-list"] button[role="tab"] {
+    font-size: 1.6rem;
+    font-weight: 600;
+    padding: 0.85rem 2rem;
+    border-radius: 8px 8px 0 0;
+    border: 1px solid transparent;
+    border-bottom: none;
+    color: #475569;
+    background: transparent;
+    transition: all 0.15s ease;
+}
+.stMainBlockContainer > div > .stTabs > [data-baseweb="tab-list"] button[role="tab"]:hover {
+    background: #F1F5F9;
+    color: #1E293B;
+}
+.stMainBlockContainer > div > .stTabs > [data-baseweb="tab-list"] button[role="tab"][aria-selected="true"] {
+    color: #2563EB;
+    background: #EFF6FF;
+    border-color: #E2E8F0;
+    border-bottom: 2px solid #FFFFFF;
+    margin-bottom: -2px;
+}
+/* Active tab underline indicator */
+.stMainBlockContainer > div > .stTabs > [data-baseweb="tab-highlight"] {
+    background-color: #2563EB;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+}
+
+/* ---- Section group headers — left border accent ---- */
+.stMainBlockContainer h2 {
+    border-left: 4px solid #2563EB;
+    padding-left: 0.6rem;
+    margin-top: 2.2rem;
+    margin-bottom: 0.5rem;
+    font-size: 1.5rem;
+}
+/* Subheaders */
+.stMainBlockContainer h3 {
+    font-size: 1.15rem;
+    margin-top: 1.2rem;
+}
+/* Subtle card-like containers */
+.stMainBlockContainer .stExpander {
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+}
+/* Bump base font size for labels and captions */
+.stMainBlockContainer .stMarkdown p,
+.stMainBlockContainer label,
+.stMainBlockContainer .stCaption p {
+    font-size: 0.95rem;
+}
+/* Nested tabs (e.g. evaluator patterns) keep default sizing */
+.stMainBlockContainer .stTabs .stTabs [data-baseweb="tab-list"] button[role="tab"] {
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 0.4rem 1rem;
+}
+/* ---- Selectbox / dropdown: darker background for contrast ---- */
+.stSelectbox [data-baseweb="select"] > div {
+    background-color: #F1F5F9;
+    border: 1px solid #CBD5E1;
+}
+/* ---- Text inputs: match dropdown styling ---- */
+.stTextInput input {
+    background-color: #F1F5F9;
+    border: 1px solid #CBD5E1;
+}
+</style>
+""", unsafe_allow_html=True)
 
 REVIEWED_PATH = PROJECT_ROOT / "data" / "reviewed.json"
 
@@ -147,11 +229,14 @@ def load_data() -> pd.DataFrame:
     return df
 
 
-def run_search_from_dashboard():
+def run_search_from_dashboard(search_days=None):
     """Run a new search from the dashboard with progress tracking."""
     from src.aggregator import run_search
 
-    config = build_config()
+    cli_args = {}
+    if search_days is not None:
+        cli_args["days"] = search_days
+    config = build_config(cli_args)
 
     status = st.status("Searching all job boards in parallel...", expanded=True)
     progress_bar = status.progress(0.0, text="Starting 5 scrapers in parallel...")
@@ -181,6 +266,71 @@ def run_search_from_dashboard():
 
     status.update(
         label=f"Search complete! {len(df)} total jobs in master CSV.",
+        state="complete",
+    )
+
+
+def run_evaluation_from_dashboard(eval_days=1):
+    """Run the evaluation pipeline from the dashboard with progress tracking."""
+    from src.evaluator import (
+        load_jobs_csv, filter_jobs_by_time,
+        run_evaluation_pipeline, estimate_cost,
+    )
+    from src.eval_persistence import EvaluationStore
+
+    config = build_config()
+    store = EvaluationStore(config.evaluation)
+
+    status = st.status("Running job evaluation...", expanded=True)
+
+    # Load master CSV
+    df = load_jobs_csv(config)
+    if df.empty:
+        status.update(label="No master CSV found. Run a search first.", state="error")
+        return
+
+    # Filter by time
+    filtered = filter_jobs_by_time(df, eval_days=eval_days,
+                                   default_days=config.evaluation.default_days)
+    if filtered.empty:
+        status.update(label="No jobs match the time filter.", state="error")
+        return
+
+    # Check how many actually need evaluation
+    est = estimate_cost(filtered, config.evaluation, store)
+    if est["to_evaluate"] == 0:
+        status.update(
+            label=f"All {est['already_evaluated']} jobs in this window are already evaluated "
+                  f"({est['prefilter_skip']} pre-filter skipped).",
+            state="complete",
+        )
+        return
+
+    cost_str = (f"${est['estimated_cost_usd']:.4f}"
+                if isinstance(est["estimated_cost_usd"], (int, float))
+                else est["estimated_cost_usd"])
+    status.write(f"**{est['total_jobs']}** jobs in window | "
+                 f"**{est['prefilter_skip']}** pre-filter skip | "
+                 f"**{est['already_evaluated']}** already evaluated | "
+                 f"**{est['to_evaluate']}** to evaluate (est. {cost_str})")
+
+    progress_bar = status.progress(0.0, text="Evaluating jobs...")
+
+    def progress_callback(completed, total):
+        pct = completed / total if total else 1.0
+        progress_bar.progress(pct, text=f"Evaluated {completed}/{total} jobs...")
+
+    summary = run_evaluation_pipeline(
+        jobs_df=filtered,
+        config=config.evaluation,
+        store=store,
+        progress_callback=progress_callback,
+    )
+
+    status.update(
+        label=(f"Evaluation complete! {summary['evaluated']} evaluated, "
+               f"{summary['prefilter_skipped']} pre-filter skipped, "
+               f"{summary['already_evaluated']} already done."),
         state="complete",
     )
 
@@ -816,19 +966,669 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
 
 
 # ---------------------------------------------------------------------------
+# Tab 3: Setup / Profile
+# ---------------------------------------------------------------------------
+
+def _load_resume_profile() -> dict:
+    """Load resume profile JSON."""
+    path = PROJECT_ROOT / "data" / "resume_profile.json"
+    if path.is_file():
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
+
+
+def _save_resume_profile(data: dict):
+    """Save resume profile JSON."""
+    path = PROJECT_ROOT / "data" / "resume_profile.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _load_evaluator_patterns() -> dict:
+    """Load evaluator patterns YAML."""
+    import yaml
+    path = PROJECT_ROOT / "data" / "evaluator_patterns.yaml"
+    if path.is_file():
+        try:
+            with open(path, "r") as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_evaluator_patterns(data: dict):
+    """Save evaluator patterns YAML."""
+    import yaml
+    path = PROJECT_ROOT / "data" / "evaluator_patterns.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def _load_config_yaml() -> dict:
+    """Load config.yaml."""
+    import yaml
+    if DEFAULT_CONFIG_PATH.is_file():
+        with open(DEFAULT_CONFIG_PATH, "r") as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def _save_config_yaml(data: dict):
+    """Save config.yaml."""
+    import yaml
+    with open(DEFAULT_CONFIG_PATH, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def _resolve_wizard_ai(config_yaml: dict) -> tuple[str, str]:
+    """Resolve the effective provider/model the wizard will use.
+
+    Returns (provider, model) — checks wizard config first, falls back to evaluation.
+    """
+    from src.ai_client import DEFAULT_MODELS
+    wiz = config_yaml.get("wizard", {})
+    if wiz.get("provider"):
+        provider = wiz["provider"]
+        model = wiz.get("model", "") or DEFAULT_MODELS.get(provider, "")
+        return provider, model
+    ev = config_yaml.get("evaluation", {})
+    provider = ev.get("provider", "anthropic")
+    model = ev.get("model", "") or DEFAULT_MODELS.get(provider, "")
+    return provider, model
+
+
+def _render_ai_provider_picker(config_section: str, key_prefix: str) -> None:
+    """Render provider/model/api_key/base_url picker for a config section.
+
+    Args:
+        config_section: "wizard" or "evaluation" — key in config.yaml
+        key_prefix: Streamlit widget key prefix (e.g. "wizard" or "eval")
+    """
+    from src.ai_client import DEFAULT_MODELS, PROVIDER_MODELS, MODEL_PRICING
+
+    config_yaml = _load_config_yaml()
+    section_cfg = config_yaml.get(config_section, {})
+
+    providers = ["anthropic", "openai", "ollama"]
+    current_provider = section_cfg.get("provider", "" if config_section == "wizard" else "anthropic")
+    if config_section == "wizard":
+        provider_options = ["(use evaluation provider)"] + providers
+        if current_provider in providers:
+            provider_idx = providers.index(current_provider) + 1
+        else:
+            provider_idx = 0  # "(use evaluation provider)"
+    else:
+        provider_options = providers
+        provider_idx = providers.index(current_provider) if current_provider in providers else 0
+
+    new_provider_display = st.selectbox(
+        "Provider", provider_options, index=provider_idx, key=f"{key_prefix}_provider"
+    )
+
+    # Resolve actual provider value to store
+    if new_provider_display == "(use evaluation provider)":
+        new_provider = ""
+    else:
+        new_provider = new_provider_display
+
+    # Model selection — only show if a provider is selected
+    if new_provider:
+        default_model = DEFAULT_MODELS.get(new_provider, "")
+        current_model = section_cfg.get("model", default_model)
+
+        known_models = PROVIDER_MODELS.get(new_provider, [])
+        model_options = known_models + ["Other (custom)"]
+
+        if current_model in known_models:
+            model_idx = known_models.index(current_model)
+        else:
+            model_idx = len(known_models)
+
+        selected_model = st.selectbox("Model", model_options, index=model_idx, key=f"{key_prefix}_model")
+
+        if selected_model == "Other (custom)":
+            custom_val = current_model if current_model not in known_models else ""
+            new_model = st.text_input("Custom model name", value=custom_val, key=f"{key_prefix}_model_custom")
+        else:
+            new_model = selected_model
+
+        # Cost estimate
+        pricing = MODEL_PRICING.get(new_model)
+        if pricing:
+            input_rate, output_rate = pricing
+            avg_input, avg_output = 2500, 300
+            cost_per_call = (avg_input / 1_000_000) * input_rate + (avg_output / 1_000_000) * output_rate
+            label = "per wizard call" if config_section == "wizard" else "per job evaluation"
+            st.info(
+                f"**Estimated cost:** ~${cost_per_call:.4f} {label}  \n"
+                f"Input: ${input_rate:.2f} / Output: ${output_rate:.2f} per 1M tokens"
+            )
+        elif new_provider == "ollama":
+            st.info(
+                "**Cost:** Free (local model)  \n\n"
+                "**Setup required:** Install [Ollama](https://ollama.com/download) "
+                "and pull the model:  \n"
+                f"`ollama pull {new_model}`  \n\n"
+                "Ollama must be running before you can use it here "
+                "(start it with `ollama serve` or launch the app)."
+            )
+        else:
+            st.caption("Cost estimate unavailable for custom models.")
+
+        # Base URL
+        if new_provider == "ollama":
+            default_base = "http://localhost:11434/v1"
+            current_base = section_cfg.get("base_url", default_base)
+            new_base_url = st.text_input(
+                "Base URL", value=current_base, key=f"{key_prefix}_base_url",
+                help="Where Ollama's local server listens. "
+                     "The default (http://localhost:11434/v1) is correct unless "
+                     "you changed Ollama's port.",
+                disabled=False,
+            )
+        elif new_provider == "openai":
+            current_base = section_cfg.get("base_url", "")
+            if current_base:
+                # Show the field if a custom base URL is already saved
+                new_base_url = st.text_input(
+                    "Base URL (optional)", value=current_base,
+                    key=f"{key_prefix}_base_url",
+                    help="Leave blank to use the default OpenAI API. "
+                         "Only set this for Azure OpenAI, proxies, or OpenAI-compatible APIs.",
+                )
+            else:
+                # Hide behind expander — most OpenAI users don't need this
+                with st.expander("Advanced: Custom Base URL"):
+                    new_base_url = st.text_input(
+                        "Base URL", value="", key=f"{key_prefix}_base_url",
+                        help="Leave blank to use the default OpenAI API. "
+                             "Only set this for Azure OpenAI, proxies, or OpenAI-compatible APIs.",
+                    )
+        else:
+            new_base_url = ""
+
+        # API Key
+        if new_provider != "ollama":
+            current_api_key = (
+                section_cfg.get("api_key", "")
+                or (section_cfg.get("anthropic_api_key", "") if config_section == "evaluation" else "")
+                or os.environ.get({
+                    "anthropic": "ANTHROPIC_API_KEY",
+                    "openai": "OPENAI_API_KEY",
+                }.get(new_provider, ""), "")
+            )
+            new_api_key = st.text_input(
+                f"{new_provider.title()} API Key", value=current_api_key,
+                type="password", key=f"{key_prefix}_api_key"
+            )
+        else:
+            new_api_key = ""
+    else:
+        new_model = ""
+        new_base_url = ""
+        new_api_key = ""
+
+    label = "Save Wizard AI Provider" if config_section == "wizard" else "Save Evaluation AI Provider"
+    if st.button(label, key=f"{key_prefix}_save_provider"):
+        config_yaml = _load_config_yaml()
+        config_yaml.setdefault(config_section, {})
+        config_yaml[config_section]["provider"] = new_provider
+        config_yaml[config_section]["model"] = new_model
+        config_yaml[config_section]["base_url"] = new_base_url
+        if new_api_key:
+            config_yaml[config_section]["api_key"] = new_api_key
+        _save_config_yaml(config_yaml)
+        display_provider = new_provider or "(evaluation fallback)"
+        display_model = new_model or "(evaluation fallback)"
+        st.success(f"Saved: {display_provider} / {display_model}")
+
+
+def render_setup_tab():
+    """Render the Setup / Profile tab."""
+    from src.pattern_helpers import regex_to_display, display_to_regex
+
+    # ===================================================================
+    # Group 1: AI Providers
+    # ===================================================================
+    st.header("AI Providers")
+
+    st.subheader("Wizard AI Provider")
+    st.caption("Used for resume parsing and generating search config. "
+               "If not set, falls back to the Evaluation AI Provider below.")
+    _render_ai_provider_picker("wizard", "wizard")
+
+    st.markdown("---")
+
+    st.subheader("Evaluation AI Provider")
+    st.caption("Used for scoring jobs against your resume profile.")
+    _render_ai_provider_picker("evaluation", "eval")
+
+    # ===================================================================
+    # Group 2: Getting Started
+    # ===================================================================
+    st.header("Getting Started")
+
+    st.subheader("Setup Wizard")
+    st.caption("Upload a resume to auto-generate all configuration using AI.")
+
+    # Show which AI provider the wizard will use
+    cfg = _load_config_yaml()
+    eff_provider, eff_model = _resolve_wizard_ai(cfg)
+    st.info(f"Will use: **{eff_provider}** / **{eff_model}**")
+
+    # Warn if setup has already been completed
+    has_existing_profile = bool(_load_resume_profile())
+    if has_existing_profile:
+        st.warning(
+            "A resume profile already exists. Running the wizard again will "
+            "**overwrite** your current profile, search terms, filters, and "
+            "evaluator patterns with new AI-generated configuration.",
+            icon="\u26a0\ufe0f",
+        )
+
+    uploaded = st.file_uploader(
+        "Upload resume (PDF, DOCX, or TXT)",
+        type=["pdf", "docx", "txt"],
+        key="setup_wizard_upload"
+    )
+
+    # Require explicit confirmation when overwriting existing config
+    confirm_overwrite = True
+    if has_existing_profile and uploaded:
+        confirm_overwrite = st.checkbox(
+            "I understand this will replace my existing configuration",
+            key="setup_wizard_confirm",
+        )
+
+    if uploaded and confirm_overwrite and st.button(
+        "Run Setup Wizard", key="setup_run_wizard", type="primary"
+    ):
+        # Save uploaded file to temp location
+        suffix = os.path.splitext(uploaded.name)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded.getvalue())
+            tmp_path = tmp.name
+
+        try:
+            from src.resume_parser import extract_text
+            with st.status("Running setup wizard...", expanded=True) as status:
+                # Step 1: Extract text
+                status.write("Extracting resume text...")
+                resume_text = extract_text(tmp_path)
+                status.write(f"Extracted {len(resume_text):,} characters")
+
+                # Resolve wizard AI: wizard config > evaluation config
+                cfg = _load_config_yaml()
+                wiz_cfg = cfg.get("wizard", {})
+                eval_cfg = cfg.get("evaluation", {})
+
+                if wiz_cfg.get("provider"):
+                    provider = wiz_cfg["provider"]
+                    model = wiz_cfg.get("model", "")
+                    base_url = wiz_cfg.get("base_url", "")
+                    api_key = (
+                        wiz_cfg.get("api_key", "")
+                        or os.environ.get({
+                            "anthropic": "ANTHROPIC_API_KEY",
+                            "openai": "OPENAI_API_KEY",
+                        }.get(provider, ""), "")
+                    )
+                else:
+                    provider = eval_cfg.get("provider", "anthropic")
+                    model = eval_cfg.get("model", "")
+                    base_url = eval_cfg.get("base_url", "")
+                    api_key = (
+                        eval_cfg.get("api_key", "")
+                        or eval_cfg.get("anthropic_api_key", "")
+                        or os.environ.get({
+                            "anthropic": "ANTHROPIC_API_KEY",
+                            "openai": "OPENAI_API_KEY",
+                        }.get(provider, ""), "")
+                    )
+
+                if not api_key and provider != "ollama":
+                    status.update(label="Setup wizard failed", state="error")
+                    st.error(f"API key is required for provider '{provider}'. "
+                             "Configure the AI provider in the AI Providers section above.")
+                    return
+
+                from src.ai_client import AIClient
+                client = AIClient(
+                    provider=provider,
+                    model=model,
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+
+                # Step 2: Generate profile
+                status.write(f"Generating resume profile (AI Call 1/3 via {provider})...")
+                from src.setup_wizard import (
+                    call_generate_profile,
+                    call_generate_search_config,
+                    call_generate_evaluator_patterns,
+                    WizardOutput,
+                    save_wizard_output,
+                )
+                profile_data = call_generate_profile(client, resume_text)
+                name = profile_data.get("name", "Unknown")
+                status.write(f"Profile generated for: {name}")
+
+                # Step 3: Generate search config
+                status.write("Generating search configuration (AI Call 2/3)...")
+                search_data = call_generate_search_config(client, profile_data)
+                status.write(f"Generated {len(search_data.get('search_terms', []))} search terms")
+
+                # Step 4: Generate patterns
+                status.write("Generating evaluator patterns (AI Call 3/3)...")
+                pattern_data = call_generate_evaluator_patterns(client, profile_data)
+                status.write(f"Generated {len(pattern_data.get('skip_title_patterns', []))} skip patterns")
+
+                # Save all
+                status.write("Saving configuration files...")
+                output = WizardOutput(
+                    resume_profile=profile_data,
+                    search_terms=search_data.get("search_terms", []),
+                    priority_terms=search_data.get("priority_terms", []),
+                    synonyms=search_data.get("synonyms", {}),
+                    filter_include=search_data.get("filter_include", []),
+                    filter_exclude=search_data.get("filter_exclude", []),
+                    evaluator_patterns=pattern_data,
+                )
+                files = save_wizard_output(output, cfg)
+                status.update(label=f"Setup complete! {len(files)} files saved.", state="complete")
+
+            st.success("Setup wizard completed. Reload the page to see updated configuration.")
+            st.balloons()
+
+        except Exception as e:
+            st.error(f"Wizard error: {e}")
+        finally:
+            os.unlink(tmp_path)
+
+    # ===================================================================
+    # Group 3: Search Configuration
+    # ===================================================================
+    st.header("Search Configuration")
+
+    # -- Search Terms & Synonyms --
+    st.subheader("Search Terms & Synonyms")
+    config_yaml = _load_config_yaml()
+    search_cfg = config_yaml.get("search", {})
+
+    col_terms, col_syn = st.columns(2)
+    with col_terms:
+        terms = search_cfg.get("terms", [])
+        priority = search_cfg.get("priority_terms", [])
+        terms_text = "\n".join(terms) if terms else ""
+        priority_text = "\n".join(priority) if priority else ""
+
+        st.caption("Search terms (one per line)")
+        edited_terms = st.text_area("Search Terms", value=terms_text, height=200, key="setup_terms")
+
+        st.caption("Priority terms (one per line, subset of search terms)")
+        edited_priority = st.text_area("Priority Terms", value=priority_text, height=100, key="setup_priority")
+
+    with col_syn:
+        synonyms = search_cfg.get("synonyms", {})
+        syn_text = json.dumps(synonyms, indent=2) if synonyms else "{}"
+        st.caption("Synonym groups (JSON dict)")
+        edited_syn = st.text_area("Synonyms", value=syn_text, height=320, key="setup_synonyms")
+
+    if st.button("Save Search Config", key="setup_save_search"):
+        try:
+            new_terms = [t.strip() for t in edited_terms.strip().split("\n") if t.strip()]
+            new_priority = [t.strip() for t in edited_priority.strip().split("\n") if t.strip()]
+            new_syn = json.loads(edited_syn)
+
+            config_yaml.setdefault("search", {})
+            config_yaml["search"]["terms"] = new_terms
+            config_yaml["search"]["priority_terms"] = new_priority
+            config_yaml["search"]["synonyms"] = new_syn
+            _save_config_yaml(config_yaml)
+            st.success("Search configuration saved to config.yaml.")
+        except json.JSONDecodeError as e:
+            st.error(f"Invalid synonyms JSON: {e}")
+
+    st.markdown("---")
+
+    # -- Discipline Filters --
+    st.subheader("Discipline Filters")
+    col_inc, col_exc = st.columns(2)
+
+    with col_inc:
+        includes = search_cfg.get("filter_include", [])
+        inc_text = "\n".join(includes) if includes else ""
+        st.caption("Include keywords (one per line) — title must match at least one")
+        edited_inc = st.text_area("Include Filters", value=inc_text, height=300, key="setup_includes")
+
+    with col_exc:
+        excludes = search_cfg.get("filter_exclude", [])
+        exc_text = "\n".join(excludes) if excludes else ""
+        st.caption("Exclude keywords (one per line) — title matching any of these is removed")
+        edited_exc = st.text_area("Exclude Filters", value=exc_text, height=300, key="setup_excludes")
+
+    if st.button("Save Filters", key="setup_save_filters"):
+        new_inc = [t.strip() for t in edited_inc.strip().split("\n") if t.strip()]
+        new_exc = [t.strip() for t in edited_exc.strip().split("\n") if t.strip()]
+        config_yaml = _load_config_yaml()
+        config_yaml.setdefault("search", {})
+        config_yaml["search"]["filter_include"] = new_inc
+        config_yaml["search"]["filter_exclude"] = new_exc
+        _save_config_yaml(config_yaml)
+        st.success("Filters saved to config.yaml.")
+
+    st.markdown("---")
+
+    # -- Job Board API Keys --
+    st.subheader("Job Board API Keys")
+    st.caption("Optional — configure to search additional job boards beyond Indeed and LinkedIn.")
+
+    config_yaml = _load_config_yaml()
+    usa_cfg = config_yaml.get("usajobs", {})
+    adz_cfg = config_yaml.get("adzuna", {})
+    joo_cfg = config_yaml.get("jooble", {})
+
+    usa_key = usa_cfg.get("api_key", "") or os.environ.get("USAJOBS_API_KEY", "")
+    usa_email = usa_cfg.get("email", "") or os.environ.get("USAJOBS_EMAIL", "")
+    adz_id = adz_cfg.get("app_id", "") or os.environ.get("ADZUNA_APP_ID", "")
+    adz_key = adz_cfg.get("app_key", "") or os.environ.get("ADZUNA_APP_KEY", "")
+    joo_key = joo_cfg.get("api_key", "") or os.environ.get("JOOBLE_API_KEY", "")
+
+    col_usa1, col_usa2 = st.columns(2)
+    with col_usa1:
+        new_usa_key = st.text_input("USAJobs API Key", value=usa_key, type="password", key="setup_key_usajobs")
+    with col_usa2:
+        new_usa_email = st.text_input("USAJobs Email", value=usa_email, key="setup_email_usajobs")
+    col_adz1, col_adz2 = st.columns(2)
+    with col_adz1:
+        new_adz_id = st.text_input("Adzuna App ID", value=adz_id, type="password", key="setup_key_adzuna_id")
+    with col_adz2:
+        new_adz_key = st.text_input("Adzuna App Key", value=adz_key, type="password", key="setup_key_adzuna_key")
+    new_joo_key = st.text_input("Jooble API Key", value=joo_key, type="password", key="setup_key_jooble")
+
+    if st.button("Save Job Board API Keys", key="setup_save_keys"):
+        config_yaml = _load_config_yaml()
+        config_yaml.setdefault("usajobs", {})
+        config_yaml.setdefault("adzuna", {})
+        config_yaml.setdefault("jooble", {})
+
+        if new_usa_key:
+            config_yaml["usajobs"]["api_key"] = new_usa_key
+        if new_usa_email:
+            config_yaml["usajobs"]["email"] = new_usa_email
+        if new_adz_id:
+            config_yaml["adzuna"]["app_id"] = new_adz_id
+        if new_adz_key:
+            config_yaml["adzuna"]["app_key"] = new_adz_key
+        if new_joo_key:
+            config_yaml["jooble"]["api_key"] = new_joo_key
+
+        _save_config_yaml(config_yaml)
+        st.success("Job board API keys saved to config.yaml.")
+
+    # ===================================================================
+    # Group 4: Evaluator Patterns
+    # ===================================================================
+    st.header("Evaluator Patterns")
+
+    patterns = _load_evaluator_patterns()
+
+    if patterns:
+        pattern_keys = ["skip_title_patterns", "skip_description_patterns",
+                        "rescue_patterns", "boost_patterns"]
+        tab_labels = ["Skip Title", "Skip Description", "Rescue", "Boost"]
+        tab_descriptions = {
+            "skip_title_patterns": "Jobs with these words in the title are automatically skipped",
+            "skip_description_patterns": "Jobs with these phrases in the description are skipped, unless rescued",
+            "rescue_patterns": "Core skills that save a job from being skipped",
+            "boost_patterns": "Dream-job keywords that get priority evaluation",
+        }
+        tabs_d = st.tabs(tab_labels)
+
+        edited_dfs: dict[str, pd.DataFrame] = {}
+        for tab, key in zip(tabs_d, pattern_keys):
+            with tab:
+                st.caption(tab_descriptions[key])
+                pats = patterns.get(key, [])
+                # Convert regex patterns to display strings
+                rows = []
+                for pat in pats:
+                    display, _can_rt = regex_to_display(pat)
+                    rows.append({"Pattern": display})
+                if not rows:
+                    rows.append({"Pattern": ""})
+                df = pd.DataFrame(rows)
+                edited = st.data_editor(
+                    df,
+                    column_config={
+                        "Pattern": st.column_config.TextColumn(
+                            "Pattern",
+                            help="Enter a plain-English phrase (e.g. 'drug substance') "
+                                 "or raw regex (e.g. '\\bstats\\b')",
+                            width="large",
+                        ),
+                    },
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key=f"setup_pat_{key}",
+                )
+                edited_dfs[key] = edited
+
+        if st.button("Save Patterns", key="setup_save_patterns"):
+            new_patterns = {}
+            errors = []
+            for key in pattern_keys:
+                df = edited_dfs[key]
+                valid = []
+                for _, row in df.iterrows():
+                    pat_str = str(row.get("Pattern", "")).strip()
+                    if not pat_str:
+                        continue
+                    # display_to_regex handles both: phrases get converted,
+                    # raw regex (containing \b or \s) passes through as-is
+                    regex_str = display_to_regex(pat_str)
+                    # Validate
+                    try:
+                        re.compile(regex_str)
+                        valid.append(regex_str)
+                    except re.error as e:
+                        errors.append(f"Invalid regex skipped ({pat_str}): {e}")
+                new_patterns[key] = valid
+            _save_evaluator_patterns(new_patterns)
+            # Reload evaluator patterns if evaluator is imported
+            try:
+                from src.evaluator import reload_patterns
+                reload_patterns()
+            except Exception:
+                pass
+            if errors:
+                for err in errors:
+                    st.warning(err)
+            st.success("Evaluator patterns saved.")
+
+        # Regex test tool in expander
+        with st.expander("Advanced: Regex Test Tool"):
+            test_text = st.text_input("Test text:", key="setup_test_pattern_text")
+            test_regex = st.text_input("Regex pattern:", key="setup_test_pattern_regex")
+            if test_text and test_regex:
+                try:
+                    match = re.search(test_regex, test_text, re.IGNORECASE)
+                    if match:
+                        st.success(f"Match found: '{match.group()}'")
+                    else:
+                        st.warning("No match.")
+                except re.error as e:
+                    st.error(f"Invalid regex: {e}")
+    else:
+        st.info("No evaluator patterns file found. Run the setup wizard to generate one, "
+                "or the built-in patterns will be used automatically.")
+
+    # ===================================================================
+    # Group 5: Advanced (collapsed)
+    # ===================================================================
+    st.header("Advanced")
+
+    with st.expander("Resume Profile (JSON)"):
+        profile = _load_resume_profile()
+
+        if profile:
+            profile_text = json.dumps(profile, indent=2)
+            st.caption("Edit your resume profile (JSON format) and click Save.")
+            edited_profile = st.text_area(
+                "resume_profile.json", value=profile_text, height=400, key="setup_profile_editor"
+            )
+            if st.button("Save Resume Profile", key="setup_save_profile"):
+                try:
+                    parsed = json.loads(edited_profile)
+                    _save_resume_profile(parsed)
+                    st.success("Resume profile saved.")
+                except json.JSONDecodeError as e:
+                    st.error(f"Invalid JSON: {e}")
+        else:
+            st.info("No resume profile found. Use the Setup Wizard above to generate one, "
+                    "or copy `data/resume_profile.example.json` to `data/resume_profile.json`.")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
-    st.title("Pharma/Biotech Job Search Results")
+    st.title("Pharma/Biotech Job Search")
 
     # --- Sidebar: Search & Reload ---
     st.sidebar.header("Actions")
 
+    search_days = st.sidebar.number_input(
+        "Search lookback (days)", min_value=1, max_value=90, value=7,
+        help="How many days back to search for jobs",
+    )
+
     if st.sidebar.button("\U0001f50d Run New Search", use_container_width=True, type="primary"):
-        run_search_from_dashboard()
+        run_search_from_dashboard(search_days=search_days)
         st.cache_data.clear()
         st.rerun()
+
+    st.sidebar.markdown("---")
+
+    eval_days = st.sidebar.number_input(
+        "Evaluate jobs from last N days", min_value=1, max_value=90, value=1,
+        help="Only evaluate jobs posted within this many days",
+    )
+
+    if st.sidebar.button("Evaluate Jobs", use_container_width=True):
+        run_evaluation_from_dashboard(eval_days=eval_days)
+        st.cache_data.clear()
+        st.rerun()
+
+    st.sidebar.markdown("---")
 
     if st.sidebar.button("\U0001f504 Reload Data", use_container_width=True):
         st.cache_data.clear()
@@ -836,10 +1636,26 @@ def main():
 
     st.sidebar.markdown("---")
 
+    # --- Tabs ---
+    tab1, tab2, tab3 = st.tabs([
+        "\U0001f4cb  Job Listings",
+        "\U0001f4ca  Evaluation Results",
+        "\u2699\ufe0f  Setup",
+    ])
+
+    # Setup tab renders independently (no data dependency)
+    with tab3:
+        render_setup_tab()
+
+    # Data tabs share loaded data
     df = load_data()
 
     if df.empty:
-        st.warning("No data found. Click **Run New Search** or run from CLI: `python job_search.py`")
+        with tab1:
+            st.info("No data yet. Click **Run New Search** in the sidebar, "
+                    "or run from CLI: `python job_search.py`")
+        with tab2:
+            st.info("No evaluation data yet. Run a search first, then evaluate jobs.")
         return
 
     # Compute derived columns
@@ -887,9 +1703,6 @@ def main():
     # Load reviewed data (shared across both tabs)
     reviewed_data = load_reviewed()
     df["reviewed_at"] = df["job_url"].map(reviewed_data).fillna("")
-
-    # --- Tabs ---
-    tab1, tab2 = st.tabs(["Job Listings", "Evaluation Results"])
 
     with tab1:
         render_job_listings_tab(df.copy(), reviewed_data)

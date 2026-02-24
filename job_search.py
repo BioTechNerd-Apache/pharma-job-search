@@ -84,6 +84,10 @@ Evaluation:
     parser.add_argument("--re-evaluate", action="store_true",
                         help="Force re-evaluation of already-scored jobs")
 
+    # Setup wizard
+    parser.add_argument("--setup", type=str, metavar="RESUME_FILE",
+                        help="Run interactive setup wizard with a resume file (PDF, DOCX, or TXT)")
+
     return parser.parse_args()
 
 
@@ -106,47 +110,7 @@ def cli_progress_callback(scraper_name, status, count=0):
         logger.info(f"  {scraper_name} done — {count} results")
 
 
-def load_jobs_csv(config) -> pd.DataFrame:
-    """Load the master jobs CSV."""
-    from src.exporter import get_master_path
-    master_path = get_master_path(config.output, "csv")
-    if not master_path.exists():
-        logger.error(f"Master CSV not found: {master_path}")
-        logger.error("Run a search first: python job_search.py")
-        return pd.DataFrame()
-    df = pd.read_csv(master_path, parse_dates=["date_posted"])
-    logger.info(f"Loaded {len(df)} jobs from {master_path}")
-    return df
-
-
-def filter_jobs_by_time(df: pd.DataFrame, eval_since: str = None,
-                        eval_days: int = None, eval_all: bool = False,
-                        default_days: int = 1) -> pd.DataFrame:
-    """Filter jobs DataFrame by time window for evaluation."""
-    if eval_all:
-        logger.info(f"Evaluating all {len(df)} jobs")
-        return df
-
-    if "date_posted" not in df.columns:
-        logger.warning("No date_posted column — evaluating all jobs")
-        return df
-
-    df["date_posted"] = pd.to_datetime(df["date_posted"], errors="coerce")
-
-    if eval_since:
-        cutoff = pd.Timestamp(eval_since)
-    elif eval_days is not None:
-        # Use start-of-day so "--eval-days 1" means "today and yesterday"
-        cutoff = (pd.Timestamp.now().normalize() - pd.Timedelta(days=eval_days - 1))
-    else:
-        cutoff = (pd.Timestamp.now().normalize() - pd.Timedelta(days=default_days - 1))
-
-    has_date = df[df["date_posted"] >= cutoff]
-    no_date = df[df["date_posted"].isna()]
-    filtered = pd.concat([has_date, no_date]).drop_duplicates()
-    logger.info(f"Time filter: {len(has_date)} jobs since {cutoff.strftime('%Y-%m-%d %H:%M')} "
-                f"+ {len(no_date)} with no date = {len(filtered)} total")
-    return filtered
+from src.evaluator import load_jobs_csv, filter_jobs_by_time
 
 
 def run_evaluation(args, config):
@@ -265,6 +229,12 @@ def main():
         cli_overrides["sites"] = args.sites
     if args.fetch_descriptions is not None:
         cli_overrides["fetch_descriptions"] = args.fetch_descriptions
+
+    # --setup: run setup wizard before anything else
+    if args.setup:
+        from src.setup_wizard import run_cli_wizard
+        success = run_cli_wizard(args.setup)
+        sys.exit(0 if success else 1)
 
     config = build_config(cli_overrides)
 
