@@ -122,10 +122,12 @@ def _get_launch_command() -> str:
 
 def _create_macos_shortcut(launch_cmd: str) -> bool:
     """Create a .command shortcut on macOS Desktop."""
+    project_dir = shlex.quote(str(PROJECT_ROOT))
     shortcut = Path.home() / "Desktop" / "Pharma Job Search.command"
     shortcut.write_text(
         f"#!/bin/bash\n"
         f"# Pharma/Biotech Job Search Dashboard launcher\n"
+        f"cd {project_dir}\n"
         f"{launch_cmd} &\n"
         f"echo 'Waiting for dashboard to start...'\n"
         f"for i in $(seq 1 30); do\n"
@@ -140,10 +142,12 @@ def _create_macos_shortcut(launch_cmd: str) -> bool:
 
 def _create_windows_shortcut(launch_cmd: str) -> bool:
     """Create a .bat shortcut on Windows Desktop."""
+    project_dir = str(PROJECT_ROOT)
     shortcut = Path.home() / "Desktop" / "Pharma Job Search.bat"
     shortcut.write_text(
         f"@echo off\r\n"
         f"REM Pharma/Biotech Job Search Dashboard launcher\r\n"
+        f"cd /d \"{project_dir}\"\r\n"
         f"start \"\" {launch_cmd}\r\n"
         f"echo Waiting for dashboard to start...\r\n"
         f":wait_loop\r\n"
@@ -158,13 +162,14 @@ def _create_windows_shortcut(launch_cmd: str) -> bool:
 
 def _create_linux_shortcut(launch_cmd: str) -> bool:
     """Create a .desktop shortcut on Linux Desktop."""
+    project_dir = str(PROJECT_ROOT)
     shortcut = Path.home() / "Desktop" / "pharma-job-search.desktop"
     shortcut.write_text(
         f"[Desktop Entry]\n"
         f"Type=Application\n"
         f"Name=Pharma Job Search\n"
         f"Comment=Launch the Pharma/Biotech Job Search Dashboard\n"
-        f"Exec={launch_cmd}\n"
+        f"Exec=bash -c 'cd \"{project_dir}\" && {launch_cmd}'\n"
         f"Terminal=true\n"
         f"Categories=Utility;\n"
     )
