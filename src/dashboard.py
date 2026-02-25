@@ -590,7 +590,7 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
 
     if selected_rows:
         st.session_state.jl_selected = selected_rows
-    elif "jl_selected" not in st.session_state:
+    else:
         st.session_state.jl_selected = []
 
     # Use session_state selections for all actions (immune to grid rearrangement)
@@ -843,7 +843,7 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
     # Deterministic sort prevents visual rearrangement on selectionChanged reruns
     sort_cols = [c for c in ["fit_score", "job_url"] if c in grid_df.columns]
     if sort_cols:
-        grid_df = grid_df.sort_values(sort_cols, ascending=[False, True]).reset_index(drop=True)
+        grid_df = grid_df.sort_values(sort_cols, ascending=[False, True], na_position="last").reset_index(drop=True)
 
     gb = GridOptionsBuilder.from_dataframe(grid_df)
     gb.configure_default_column(filterable=True, sortable=True, resizable=True, filter=True)
@@ -923,7 +923,7 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
 
     if selected_rows:
         st.session_state.eval_selected = selected_rows
-    elif "eval_selected" not in st.session_state:
+    else:
         st.session_state.eval_selected = []
 
     # Use session_state selections for all actions (immune to grid rearrangement)
