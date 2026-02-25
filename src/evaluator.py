@@ -431,6 +431,28 @@ async def evaluate_single_job(
             # Ensure score is int
             result["fit_score"] = int(result.get("fit_score", 0))
 
+            # Hard cap for title-only jobs — AI often ignores the prompt cap
+            if not description_available:
+                if result["fit_score"] > 50:
+                    result["fit_score"] = 50
+                # Recalculate bucket and recommendation from capped score
+                s = result["fit_score"]
+                result["fit_bucket"] = (
+                    "strong" if s >= 70 else
+                    "moderate" if s >= 55 else
+                    "weak" if s >= 40 else
+                    "poor"
+                )
+                result["recommendation"] = (
+                    "apply" if s >= 60 else
+                    "maybe" if s >= 45 else
+                    "skip"
+                )
+                # Prefix domain_match so the user knows it's inferred
+                dm = result.get("domain_match", "")
+                if dm and not dm.startswith("[Title Only]"):
+                    result["domain_match"] = f"[Title Only] {dm}"
+
             result["description_available"] = description_available
             result["input_tokens"] = response.input_tokens
             result["output_tokens"] = response.output_tokens
@@ -481,6 +503,7 @@ async def evaluate_batch(
     jobs_df: pd.DataFrame,
     config: EvaluationConfig,
     progress_callback=None,
+    store=None,
 ) -> list[dict]:
     """Evaluate a batch of jobs using the configured AI provider with rate limiting.
 
@@ -488,6 +511,8 @@ async def evaluate_batch(
         jobs_df: DataFrame with columns: job_url, title, company, description
         config: EvaluationConfig with API settings
         progress_callback: optional callable(completed, total) for progress updates
+        store: optional EvaluationStore — when provided, each result is saved
+               incrementally so interrupted runs don't lose progress
 
     Returns:
         List of dicts, each with job_url + evaluation fields
@@ -507,9 +532,10 @@ async def evaluate_batch(
     total = len(jobs_df)
     semaphore = asyncio.Semaphore(config.max_concurrent)
     completed = 0
+    _unsaved_count = 0  # Track results not yet flushed to disk
 
     async def eval_with_rate_limit(row):
-        nonlocal completed
+        nonlocal completed, _unsaved_count
         async with semaphore:
             result = await evaluate_single_job(
                 client=client,
@@ -522,6 +548,19 @@ async def evaluate_batch(
             )
             result["job_url"] = row["job_url"]
             result["evaluated_timestamp"] = pd.Timestamp.now().isoformat()
+
+            # Incremental persist: save to store immediately so refreshes
+            # don't lose completed work
+            if store is not None:
+                job_url = result["job_url"]
+                store.add_evaluation(job_url, {k: v for k, v in result.items()
+                                               if k != "job_url"})
+                _unsaved_count += 1
+                # Flush to disk every 5 results to balance safety vs I/O
+                if _unsaved_count >= 5:
+                    store.save()
+                    _unsaved_count = 0
+
             completed += 1
             if progress_callback:
                 progress_callback(completed, total)
@@ -540,6 +579,10 @@ async def evaluate_batch(
                 logger.error(f"Evaluation task failed: {r}")
             else:
                 results.append(r)
+
+    # Final flush for any remaining unsaved results
+    if store is not None and _unsaved_count > 0:
+        store.save()
 
     return results
 
@@ -610,6 +653,7 @@ def run_evaluation_pipeline(
     prefilter_only: bool = False,
     re_evaluate: bool = False,
     progress_callback=None,
+    desc_progress_callback=None,
 ) -> dict:
     """Run the full evaluation pipeline: pre-filter → skip evaluated → Claude API → persist.
 
@@ -620,6 +664,7 @@ def run_evaluation_pipeline(
         prefilter_only: If True, only run Stage 1 (no API calls)
         re_evaluate: If True, re-evaluate even if already scored
         progress_callback: optional callable(completed, total)
+        desc_progress_callback: optional callable(fetched, total, succeeded) for description fetch
 
     Returns:
         Summary dict with counts
@@ -722,6 +767,8 @@ def run_evaluation_pipeline(
             def fetch_progress(done, total_fetch, succeeded):
                 logger.info(f"  Fetching descriptions: {done}/{total_fetch} "
                             f"({succeeded} succeeded)")
+                if desc_progress_callback:
+                    desc_progress_callback(done, total_fetch, succeeded)
 
             fetched = fetch_missing_descriptions(
                 to_api_df, needs_fetch,
@@ -738,18 +785,11 @@ def run_evaluation_pipeline(
             if fetched:
                 _save_descriptions_to_csv(fetched, jobs_df, config)
 
-    # Stage 2: Claude API evaluation
-    results = asyncio.run(evaluate_batch(to_api_df, config, progress_callback))
+    # Stage 2: Claude API evaluation (store passed in for incremental saves)
+    results = asyncio.run(evaluate_batch(to_api_df, config, progress_callback, store=store))
 
-    # Persist results
-    evaluated_urls = []
-    for result in results:
-        job_url = result.pop("job_url", "")
-        if job_url:
-            store.add_evaluation(job_url, result)
-            evaluated_urls.append(job_url)
-
-    store.save()
+    # Results are already persisted incrementally — collect URLs for CSV writeback
+    evaluated_urls = [r.get("job_url", "") for r in results if r.get("job_url")]
 
     # Write eval_status back to master CSV
     _update_eval_status_in_csv(evaluated_urls, skipped_urls)

@@ -314,17 +314,29 @@ def run_evaluation_from_dashboard(eval_days=1):
                  f"**{est['already_evaluated']}** already evaluated | "
                  f"**{est['to_evaluate']}** to evaluate (est. {cost_str})")
 
-    progress_bar = status.progress(0.0, text="Evaluating jobs...")
+    # Progress bars for description fetching stage
+    desc_bar = status.progress(0.0, text="Fetching missing job descriptions...")
+    sidebar_progress = st.sidebar.progress(0.0, text="Starting evaluation pipeline...")
+
+    def desc_progress_callback(fetched, total_fetch, succeeded):
+        pct = fetched / total_fetch if total_fetch else 1.0
+        desc_bar.progress(pct, text=f"Fetching descriptions: {fetched}/{total_fetch} ({succeeded} succeeded)")
+        sidebar_progress.progress(pct, text=f"Fetching descriptions: {fetched}/{total_fetch}")
+
+    # Progress bars for AI evaluation stage
+    eval_bar = status.progress(0.0, text="Waiting to start AI evaluation...")
 
     def progress_callback(completed, total):
         pct = completed / total if total else 1.0
-        progress_bar.progress(pct, text=f"Evaluated {completed}/{total} jobs...")
+        eval_bar.progress(pct, text=f"AI evaluation: {completed}/{total} jobs...")
+        sidebar_progress.progress(pct, text=f"Evaluating {completed}/{total} jobs...")
 
     summary = run_evaluation_pipeline(
         jobs_df=filtered,
         config=config.evaluation,
         store=store,
         progress_callback=progress_callback,
+        desc_progress_callback=desc_progress_callback,
     )
 
     status.update(
@@ -375,6 +387,23 @@ DIRECT_LINK_RENDERER = JsCode("""
                 a.style.color = '#e67c00';
                 a.style.textDecoration = 'underline';
                 this.eGui.appendChild(a);
+            }
+        }
+        getGui() { return this.eGui; }
+    }
+""")
+
+TITLE_ONLY_RENDERER = JsCode("""
+    class TitleOnlyRenderer {
+        init(params) {
+            this.eGui = document.createElement('span');
+            if (params.value === false || params.value === 'False') {
+                this.eGui.innerHTML = '\u26a0\ufe0f Title Only';
+                this.eGui.style.color = '#e67c00';
+                this.eGui.style.fontWeight = 'bold';
+            } else {
+                this.eGui.innerHTML = '\u2713 Full';
+                this.eGui.style.color = '#28a745';
             }
         }
         getGui() { return this.eGui; }
@@ -738,6 +767,14 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
     if show_unreviewed:
         eval_df = eval_df[eval_df["reviewed_at"] == ""]
 
+    if "description_available" in eval_df.columns:
+        title_only_count = (~eval_df["description_available"].astype(bool)).sum()
+        show_title_only = st.sidebar.checkbox(
+            f"Title-only jobs only ({title_only_count})", value=False, key="eval_title_only"
+        )
+        if show_title_only:
+            eval_df = eval_df[~eval_df["description_available"].astype(bool)]
+
     if "source" in eval_df.columns:
         sources = sorted(eval_df["source"].dropna().unique())
         selected_sources = st.sidebar.multiselect("Source", sources, default=sources, key="eval_sources")
@@ -784,6 +821,7 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
     # Prepare display columns
     display_cols = [
         "fit_score", "fit_bucket", "recommendation",
+        "description_available",
         "title", "company", "domain_match",
         "location", "state", "date_posted", "days_since_posted",
         "source", "job_url", "job_url_direct",
@@ -820,6 +858,10 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
 
     if "recommendation" in display_cols:
         gb.configure_column("recommendation", headerName="Recommendation", filter="agSetColumnFilter")
+
+    if "description_available" in display_cols:
+        gb.configure_column("description_available", headerName="Info",
+                            cellRenderer=TITLE_ONLY_RENDERER, filter="agSetColumnFilter")
 
     for col in ["title", "company", "domain_match", "location", "state",
                 "evaluated_timestamp", "reviewed_at"]:
@@ -1638,7 +1680,7 @@ def main():
         help="Only evaluate jobs posted within this many days",
     )
 
-    if st.sidebar.button("Evaluate Jobs", use_container_width=True):
+    if st.sidebar.button("\U0001f9ea Evaluate Jobs", use_container_width=True, type="primary"):
         run_evaluation_from_dashboard(eval_days=eval_days)
         st.cache_data.clear()
         st.rerun()
