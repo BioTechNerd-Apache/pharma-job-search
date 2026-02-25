@@ -743,19 +743,23 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
     # --- Sidebar Filters ---
     st.sidebar.header("Evaluation Filters")
 
+    # Precompute stable option lists from UNFILTERED data so Streamlit multiselect
+    # widgets always see the same options between reruns (prevents ghost rows).
+    all_recs = sorted(eval_df["recommendation"].dropna().unique()) if "recommendation" in eval_df.columns else []
+    all_buckets = sorted(eval_df["fit_bucket"].dropna().unique()) if "fit_bucket" in eval_df.columns else []
+    all_sources = sorted(eval_df["source"].dropna().unique()) if "source" in eval_df.columns else []
+
     min_score = st.sidebar.slider("Min Fit Score", 0, 100, 0, key="eval_min_score")
     if min_score > 0:
         eval_df = eval_df[eval_df["fit_score"] >= min_score]
 
-    if "recommendation" in eval_df.columns:
-        recs = sorted(eval_df["recommendation"].dropna().unique())
-        selected_recs = st.sidebar.multiselect("Recommendation", recs, default=recs, key="eval_recs")
+    if all_recs:
+        selected_recs = st.sidebar.multiselect("Recommendation", all_recs, default=all_recs, key="eval_recs")
         if selected_recs:
             eval_df = eval_df[eval_df["recommendation"].isin(selected_recs)]
 
-    if "fit_bucket" in eval_df.columns:
-        buckets = sorted(eval_df["fit_bucket"].dropna().unique())
-        selected_buckets = st.sidebar.multiselect("Fit Bucket", buckets, default=buckets, key="eval_buckets")
+    if all_buckets:
+        selected_buckets = st.sidebar.multiselect("Fit Bucket", all_buckets, default=all_buckets, key="eval_buckets")
         if selected_buckets:
             eval_df = eval_df[eval_df["fit_bucket"].isin(selected_buckets)]
 
@@ -775,9 +779,8 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
         if show_title_only:
             eval_df = eval_df[~eval_df["description_available"].astype(bool)]
 
-    if "source" in eval_df.columns:
-        sources = sorted(eval_df["source"].dropna().unique())
-        selected_sources = st.sidebar.multiselect("Source", sources, default=sources, key="eval_sources")
+    if all_sources:
+        selected_sources = st.sidebar.multiselect("Source", all_sources, default=all_sources, key="eval_sources")
         if selected_sources:
             eval_df = eval_df[eval_df["source"].isin(selected_sources)]
 
@@ -851,7 +854,9 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
     # Fit score with color coding
     if "fit_score" in display_cols:
         gb.configure_column("fit_score", headerName="Fit Score",
-                            filter="agNumberColumnFilter", cellStyle=FIT_SCORE_STYLE)
+                            filter="agNumberColumnFilter", cellStyle=FIT_SCORE_STYLE,
+                            filterParams={"defaultOption": "greaterThanOrEqual",
+                                          "suppressAndOrCondition": True})
 
     if "fit_bucket" in display_cols:
         gb.configure_column("fit_bucket", headerName="Fit Bucket", filter="agSetColumnFilter")
@@ -875,7 +880,9 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
 
     for col in ["days_since_posted"]:
         if col in display_cols:
-            gb.configure_column(col, headerName="Days Old", filter="agNumberColumnFilter")
+            gb.configure_column(col, headerName="Days Old", filter="agNumberColumnFilter",
+                                filterParams={"defaultOption": "greaterThanOrEqual",
+                                              "suppressAndOrCondition": True})
 
     if "source" in display_cols:
         gb.configure_column("source", headerName="Source", filter="agSetColumnFilter")
@@ -902,6 +909,7 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
     gb.configure_selection("multiple", use_checkbox=True)
     grid_options = gb.build()
     grid_options["defaultColDef"]["floatingFilter"] = True
+    grid_options["defaultColDef"]["unSortIcon"] = True
     grid_options["defaultColDef"]["suppressSizeToFit"] = True
     grid_options["suppressColumnVirtualisation"] = True
     grid_options["getRowId"] = JsCode("function(params) { return params.data.job_url; }")
