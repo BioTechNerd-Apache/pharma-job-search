@@ -13,8 +13,8 @@ data/evaluator_patterns.yaml
 *.bak
 *.mybackup
 
-# Streamlit local config
-.streamlit/
+# Streamlit local config (secrets only — theme is committed)
+.streamlit/secrets.toml
 
 # Python
 __pycache__/
