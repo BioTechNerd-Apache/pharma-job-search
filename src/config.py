@@ -188,8 +188,17 @@ class AppConfig:
 
 
 def load_yaml_config(path: Optional[Path] = None) -> dict:
-    """Load config from YAML file, returning empty dict if not found."""
+    """Load config from YAML file, returning empty dict if not found.
+
+    If config.yaml doesn't exist but config.example.yaml does, auto-copies the
+    example so first-time users can just launch the dashboard without manual setup.
+    """
     config_path = path or DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        example = config_path.parent / "config.example.yaml"
+        if example.exists():
+            import shutil
+            shutil.copy2(example, config_path)
     if config_path.exists():
         with open(config_path, "r") as f:
             return yaml.safe_load(f) or {}

@@ -84,6 +84,8 @@ flowchart LR
 
 ## Quick Start
 
+> **New to the command line?** Follow the [step-by-step Installation Guide](docs/INSTALL_GUIDE.md) instead — it covers Windows and Mac with screenshots and troubleshooting.
+
 ### 1. Install
 
 **One-command install (any platform):**
@@ -102,27 +104,24 @@ pip install -r requirements.txt
 
 ### 2. Configure
 
-**macOS / Linux:**
-```bash
-cp config.example.yaml config.yaml
-```
-
-**Windows:**
-```cmd
-copy config.example.yaml config.yaml
-```
-
-Edit `config.yaml` to add your API keys (see [API Keys](#api-keys) below).
-
-### 3. Run the Setup Wizard (recommended)
-
-The AI wizard generates your entire config from a resume — search terms, filters, evaluator patterns, and resume profile:
+Launch the dashboard and use the **Setup tab** to configure everything through the GUI:
 
 ```bash
-python job_search.py --setup resume.pdf
+python job_search.py --web
 ```
 
-Or use the dashboard Setup tab to upload your resume via the web UI.
+The Setup tab lets you choose an AI provider, upload your resume, run the setup wizard, edit search terms/filters, and manage API keys — all from the browser. `config.yaml` is auto-created on first launch.
+
+<details>
+<summary><b>Terminal alternative</b></summary>
+
+```bash
+cp config.example.yaml config.yaml          # macOS/Linux
+copy config.example.yaml config.yaml         # Windows
+python job_search.py --setup resume.pdf      # AI wizard from CLI
+```
+
+</details>
 
 > **No AI key?** Use Ollama for free local inference. See [AI Providers](#ai-providers) below.
 
@@ -145,13 +144,13 @@ Edit `data/resume_profile.json` with your actual background, and customize searc
 
 </details>
 
-### 4. Run a search
+### 3. Run a search
 
 ```bash
 python job_search.py --days 1    # Search for jobs posted in the last 24 hours
 ```
 
-### 5. View the dashboard
+### 4. View the dashboard
 
 ```bash
 python job_search.py --web
@@ -159,7 +158,7 @@ python job_search.py --web
 
 > **Dashboard search button:** The dashboard has a "Run New Search" button in the sidebar. Clicking it will scrape all 5 job boards for the last 7 days (the default in `config.yaml`). It does **not** run AI evaluation — that requires the CLI (`python job_search.py --evaluate`). To change the search window, edit the `days` value under `search:` in `config.yaml`.
 
-### 6. Create a desktop shortcut (optional)
+### 5. Create a desktop shortcut (optional)
 
 ```bash
 pharma-job-search --create-shortcut   # pip install
