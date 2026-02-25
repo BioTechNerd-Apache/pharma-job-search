@@ -183,11 +183,11 @@ ELSE → evaluate (normal priority)
 | FR-5.13 | Classify into fit buckets | strong (70+), moderate (55-69), weak (40-54), poor (<40) |
 | FR-5.14 | Provide recommendation | apply (60+), maybe (45-59), skip (<45) |
 | FR-5.15 | Return matching/missing skills, domain match, reasoning | Structured JSON response parsed from API |
-| FR-5.16 | Cap title-only jobs at score 50 | Jobs without substantive descriptions get max score = 50 |
+| FR-5.16 | Cap title-only jobs at score 50 | Hard cap enforced in code after AI response: `fit_score` clamped to 50, bucket/recommendation recalculated, `domain_match` prefixed with `"[Title Only] "` |
 | FR-5.17 | Async evaluation with configurable concurrency | `asyncio.Semaphore(max_concurrent)` — default 1 |
 | FR-5.18 | Retry with exponential backoff on rate limits | 5s, 10s, 20s, 40s... + random jitter |
 | FR-5.19 | Fail-fast on authentication errors | Aborts after 3 consecutive auth failures |
-| FR-5.20 | Persist results to evaluations.json | `eval_persistence.EvaluationStore` keyed by job_url |
+| FR-5.20 | Persist results to evaluations.json | `eval_persistence.EvaluationStore` keyed by job_url; incremental saves every 5 jobs during evaluation to prevent data loss on interruption |
 | FR-5.21 | Prevent re-evaluation of already-scored jobs | `store.is_evaluated()` check; `--re-evaluate` overrides |
 | FR-5.22 | Catch-up evaluation for missed jobs | After date filter, includes any unevaluated jobs from all time |
 | FR-5.23 | Cost estimation (dry-run mode) | `estimate_cost()` counts jobs, estimates tokens, calculates USD |
@@ -245,7 +245,7 @@ ELSE → evaluate (normal priority)
 | ID | Requirement | Implementation |
 |----|-------------|----------------|
 | FR-6.1 | Tab 1: Job Listings — browse all scraped jobs | AG Grid with sortable/filterable columns |
-| FR-6.2 | Tab 2: Evaluation Results — view AI-scored jobs | Color-coded fit scores (green 70+, yellow 55-69, orange 40-54, red <40) |
+| FR-6.2 | Tab 2: Evaluation Results — view AI-scored jobs | Color-coded fit scores (green 70+, yellow 55-69, orange 40-54, red <40); "Info" column shows description availability status |
 | FR-6.3 | Filters: source, state, remote, salary, reposted, reviewed | Sidebar selectboxes and checkboxes |
 | FR-6.4 | Review system — mark/unmark jobs as reviewed | Checkbox selection + "Mark Reviewed" button; persists to `reviewed.json` |
 | FR-6.5 | Clickable job URLs | AG Grid cell renderer opens links in new tab |
@@ -255,6 +255,9 @@ ELSE → evaluate (normal priority)
 | FR-6.9 | Run search from dashboard | Sidebar button triggers search with progress tracking |
 | FR-6.10 | Evaluation detail panel | Shows reasoning, domain match, recommendation for selected job |
 | FR-6.11 | Pagination | 50 rows per page with AG Grid pagination |
+| FR-6.12 | Info column — description availability indicator | Cell renderer shows "⚠️ Title Only" (orange) for `description_available=False`, "✓ Full" (green) otherwise; filterable via AG Grid set filter |
+| FR-6.13 | Sidebar filter for title-only jobs | Checkbox filter in Evaluation Results sidebar to isolate title-only evaluations |
+| FR-6.14 | Description fetch progress bar | Separate progress bars for Stage 1.5 description fetching and Stage 2 AI evaluation |
 
 ### 4.7 CLI Commands
 
@@ -601,7 +604,8 @@ pharma-job-search/
 | Reviewed jobs get +1000 richness boost | Ensures user-reviewed jobs survive dedup merges — never lose review state |
 | Progressive save (each scraper saves immediately) | Partial results available if any scraper fails; faster feedback |
 | 2-stage evaluation (rule-based → AI) | Pre-filter eliminates ~50% of jobs at zero API cost |
-| Title-only jobs capped at score 50 | Prevents false-high scores when AI has no description to validate against |
+| Title-only jobs capped at score 50 (enforced in code) | AI prompt asks for the cap but doesn't reliably follow it; hard cap in `evaluate_single_job()` clamps score, recalculates bucket/rec, and prefixes domain_match with `[Title Only]` |
+| Incremental evaluation saves (every 5 jobs) | Prevents data loss when browser refresh or interruption kills in-progress evaluation; `evaluate_batch()` passes store for incremental persist |
 | Fail-fast after 3 auth errors | Stops wasting time on invalid API keys |
 | Catch-up evaluation for missed jobs | Prevents jobs from permanently falling out of the eval window |
 | Merge-on-save architecture | Master CSV is always current; no manual merge step |

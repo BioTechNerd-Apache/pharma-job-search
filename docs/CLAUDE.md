@@ -79,7 +79,7 @@ python job_search.py --re-evaluate            # Force re-evaluation of scored jo
 - **iCloud sync**: The .command launcher uses `brctl download` to force iCloud to download data files before starting the dashboard.
 - **Evaluation pipeline**: 2-stage design — Stage 1 (rule-based pre-filter) skips obvious mismatches without API cost, Stage 2 (Claude Haiku) scores remaining jobs against resume profile.
 - **Description enrichment**: Stage 1.5 fetches full job descriptions from URLs for jobs with missing/thin descriptions before sending to Claude API.
-- **Evaluation persistence**: Results stored in evaluations.json keyed by job_url to prevent re-evaluation; `--re-evaluate` flag overrides this.
+- **Evaluation persistence**: Results stored in evaluations.json keyed by job_url to prevent re-evaluation; `--re-evaluate` flag overrides this. Results are saved incrementally (every 5 jobs) during evaluation so interrupted runs don't lose progress.
 - **Tiered results_per_site**: Broad search terms (defined in `priority_terms`) request `priority_results_per_site` (200) results; narrow terms use `results_per_site` (100). Prevents relevant jobs from falling outside the top 100 for competitive terms.
 - **Parallel work queue**: Instead of 1 worker per site (3 idle after API scrapers finish in ~2 min), all 5 workers share a queue of individual `(site, term)` tasks. API scrapers (USAJobs, Adzuna, Jooble) run first as single tasks, then all workers process interleaved Indeed/LinkedIn `(site, term)` pairs. Per-site `Semaphore(2)` caps concurrency; per-site delay tracking enforces `delay_between_searches` spacing. Roughly 2x faster for the Indeed/LinkedIn portion.
 
@@ -113,8 +113,9 @@ ThreadPoolExecutor(5 workers) pulling from shared work queue:
 ### Stage 2: AI Scoring (evaluator.py)
 - Uses configurable AI provider (Anthropic/OpenAI/Ollama) via ai_client.py
 - System prompt includes full resume profile + domain calibration table + strict matching rules
-- Title-only jobs capped at score 50 max
+- **Title-only hard cap**: When `description_available` is False, `fit_score` is capped at 50 in code (AI prompt asks for the cap but doesn't reliably follow it). Bucket and recommendation are recalculated from the capped score, and `domain_match` is prefixed with `"[Title Only] "`.
 - Output: fit_score (0-100), fit_bucket (strong/moderate/weak/poor), recommendation (apply/maybe/skip), matching_skills, missing_skills, domain_match, reasoning
+- **Incremental saves**: Results are persisted to `evaluations.json` every 5 jobs during evaluation, so browser refresh or interruption doesn't lose completed work
 - Async evaluation with configurable concurrency and rate limiting
 
 ## Important Patterns
@@ -126,7 +127,7 @@ ThreadPoolExecutor(5 workers) pulling from shared work queue:
 - Company name normalization strips 40+ stop words (Inc, LLC, Pharmaceuticals, etc.) for matching
 - 50+ known job boards/staffing agencies are recognized for cross-source dedup
 - Python 3.14 is hardcoded in the .command launcher
-- Dashboard has 3 tabs: "Job Listings" (original grid), "Evaluation Results" (scored jobs with fit_score color coding), and "Setup / Profile" (config editor + wizard)
+- Dashboard has 3 tabs: "Job Listings" (original grid), "Evaluation Results" (scored jobs with fit_score color coding + "Info" column showing title-only status + sidebar filter for title-only jobs), and "Setup / Profile" (config editor + wizard)
 - Both job tabs share the review system (mark/unmark reviewed via AG Grid selection)
 - Setup wizard: `--setup resume.pdf` extracts resume text, makes 3 AI calls to generate resume profile, search config, and evaluator patterns
 - Multi-provider AI: wizard and evaluation can use different providers/models (configured separately in config.yaml under `wizard:` and `evaluation:`)

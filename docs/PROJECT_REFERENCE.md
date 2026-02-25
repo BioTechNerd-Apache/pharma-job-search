@@ -25,9 +25,9 @@ A Python CLI + Streamlit dashboard tool that aggregates pharma/biotech job listi
 - **AI evaluation pipeline** — 2-stage design:
   - Stage 1: Rule-based pre-filter (skip/boost/evaluate) with rescue logic — no API cost
   - Stage 1.5: Fetches full job descriptions from URLs for jobs with missing/thin descriptions
-  - Stage 2: Claude Haiku API scoring against resume profile (fit_score 0-100, recommendation, matching/missing skills)
-- **Evaluation persistence** — results stored in `evaluations.json` keyed by job_url to prevent re-evaluation
-- **Streamlit dashboard** — AG Grid with 2 tabs: Job Listings + Evaluation Results, with review tracking, color-coded fit scores
+  - Stage 2: Claude Haiku API scoring against resume profile (fit_score 0-100, recommendation, matching/missing skills); title-only jobs hard-capped at 50 with `[Title Only]` domain_match prefix
+- **Evaluation persistence** — results stored in `evaluations.json` keyed by job_url to prevent re-evaluation; incremental saves every 5 jobs during evaluation
+- **Streamlit dashboard** — AG Grid with 3 tabs: Job Listings + Evaluation Results (with "Info" column for title-only status + sidebar filter) + Setup, with review tracking, color-coded fit scores
 - **iCloud sync** — `.command` launcher forces iCloud download before opening dashboard
 - **CLI flags** — `--days`, `--terms`, `--extra-terms`, `--sites`, `--web`, `--reprocess`, `--evaluate`, `--evaluate-only`, `--eval-days`, `--eval-all`, `--eval-prefilter-only`, `--eval-dry-run`, `--eval-summary`, `--eval-export`, `--eval-min-score`, `--re-evaluate`
 
