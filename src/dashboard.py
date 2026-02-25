@@ -1218,9 +1218,24 @@ def render_setup_tab():
     st.subheader("Setup Wizard")
     st.caption("Upload a resume to auto-generate all configuration using AI.")
 
-    # Show which AI provider the wizard will use
-    cfg = _load_config_yaml()
-    eff_provider, eff_model = _resolve_wizard_ai(cfg)
+    # Show which AI provider the wizard will use (reads live dropdown state)
+    from src.ai_client import DEFAULT_MODELS
+    wiz_provider_display = st.session_state.get("wizard_provider", "")
+    if wiz_provider_display and wiz_provider_display != "(use evaluation provider)":
+        eff_provider = wiz_provider_display
+        eff_model = st.session_state.get("wizard_model", "") or DEFAULT_MODELS.get(eff_provider, "")
+    else:
+        # Wizard not configured — fall back to evaluation provider dropdown
+        eff_provider = st.session_state.get("eval_provider", "")
+        eff_model = st.session_state.get("eval_model", "")
+        if not eff_provider:
+            # First render before widgets exist — read from saved config
+            cfg = _load_config_yaml()
+            eff_provider, eff_model = _resolve_wizard_ai(cfg)
+        elif not eff_model:
+            eff_model = DEFAULT_MODELS.get(eff_provider, "")
+    if eff_model == "Other (custom)":
+        eff_model = st.session_state.get("wizard_model_custom", "") or st.session_state.get("eval_model_custom", "") or "custom"
     st.info(f"Will use: **{eff_provider}** / **{eff_model}**")
 
     # Warn if setup has already been completed
