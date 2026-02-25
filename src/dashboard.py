@@ -1378,8 +1378,6 @@ def render_setup_tab():
                     call_generate_profile,
                     call_generate_search_config,
                     call_generate_evaluator_patterns,
-                    WizardOutput,
-                    save_wizard_output,
                 )
                 profile_data = call_generate_profile(client, resume_text)
                 name = profile_data.get("name", "Unknown")
@@ -1395,27 +1393,146 @@ def render_setup_tab():
                 pattern_data = call_generate_evaluator_patterns(client, profile_data)
                 status.write(f"Generated {len(pattern_data.get('skip_title_patterns', []))} skip patterns")
 
-                # Save all
-                status.write("Saving configuration files...")
-                output = WizardOutput(
-                    resume_profile=profile_data,
-                    search_terms=search_data.get("search_terms", []),
-                    priority_terms=search_data.get("priority_terms", []),
-                    synonyms=search_data.get("synonyms", {}),
-                    filter_include=search_data.get("filter_include", []),
-                    filter_exclude=search_data.get("filter_exclude", []),
-                    evaluator_patterns=pattern_data,
-                )
-                files = save_wizard_output(output, cfg)
-                status.update(label=f"Setup complete! {len(files)} files saved.", state="complete")
-
-            st.success("Setup wizard completed. Reload the page to see updated configuration.")
-            st.balloons()
+                # Store results for preview — do NOT save yet
+                st.session_state["wizard_preview"] = {
+                    "profile": profile_data,
+                    "search": search_data,
+                    "patterns": pattern_data,
+                }
+                status.update(label="Generation complete — review below", state="complete")
 
         except Exception as e:
             st.error(f"Wizard error: {e}")
         finally:
             os.unlink(tmp_path)
+
+    # ===================================================================
+    # Wizard Preview / Approval
+    # ===================================================================
+    if "wizard_preview" in st.session_state:
+        preview = st.session_state["wizard_preview"]
+        profile_data = preview["profile"]
+        search_data = preview["search"]
+        pattern_data = preview["patterns"]
+
+        st.subheader("Review AI-Generated Configuration")
+        st.info(
+            "Review and edit the generated configuration below, then click "
+            "**Save Configuration** to apply."
+        )
+
+        # Resume profile (read-only)
+        with st.expander("Resume Profile (read-only)", expanded=False):
+            st.json(profile_data)
+
+        # Search terms + Priority terms
+        col_st, col_pt = st.columns(2)
+        with col_st:
+            search_terms_list = search_data.get("search_terms", [])
+            wiz_search_terms = st.text_area(
+                f"Search Terms ({len(search_terms_list)} terms, one per line)",
+                value="\n".join(search_terms_list),
+                height=200,
+                key="wiz_search_terms",
+            )
+        with col_pt:
+            priority_list = search_data.get("priority_terms", [])
+            wiz_priority_terms = st.text_area(
+                f"Priority Terms ({len(priority_list)} terms, one per line)",
+                value="\n".join(priority_list),
+                height=200,
+                key="wiz_priority_terms",
+            )
+
+        # Include + Exclude filter keywords
+        col_inc, col_exc = st.columns(2)
+        with col_inc:
+            inc_list = search_data.get("filter_include", [])
+            wiz_filter_include = st.text_area(
+                f"Include Filter Keywords ({len(inc_list)} keywords, one per line)",
+                value="\n".join(inc_list),
+                height=200,
+                key="wiz_filter_include",
+            )
+        with col_exc:
+            exc_list = search_data.get("filter_exclude", [])
+            wiz_filter_exclude = st.text_area(
+                f"Exclude Filter Keywords ({len(exc_list)} keywords, one per line)",
+                value="\n".join(exc_list),
+                height=200,
+                key="wiz_filter_exclude",
+            )
+
+        # Synonyms
+        with st.expander("Synonyms (editable)", expanded=False):
+            syn_dict = search_data.get("synonyms", {})
+            syn_lines = [f"{k}: {', '.join(v)}" for k, v in syn_dict.items()]
+            wiz_synonyms = st.text_area(
+                f"Synonyms ({len(syn_dict)} entries — format: term: alias1, alias2)",
+                value="\n".join(syn_lines),
+                height=200,
+                key="wiz_synonyms",
+            )
+
+        # Evaluator patterns (read-only)
+        with st.expander("Evaluator Patterns (read-only)", expanded=False):
+            st.json(pattern_data)
+
+        # Save / Discard buttons
+        col_save, col_discard = st.columns(2)
+        with col_save:
+            if st.button("Save Configuration", type="primary", key="wiz_save"):
+                # Parse edited text areas back into lists/dicts
+                edited_terms = [
+                    t.strip() for t in wiz_search_terms.split("\n") if t.strip()
+                ]
+                edited_priority = [
+                    t.strip() for t in wiz_priority_terms.split("\n") if t.strip()
+                ]
+                edited_include = [
+                    t.strip() for t in wiz_filter_include.split("\n") if t.strip()
+                ]
+                edited_exclude = [
+                    t.strip() for t in wiz_filter_exclude.split("\n") if t.strip()
+                ]
+                # Parse synonyms: "key: val1, val2" -> {key: [val1, val2]}
+                edited_synonyms: dict[str, list[str]] = {}
+                for line in wiz_synonyms.split("\n"):
+                    line = line.strip()
+                    if not line or ":" not in line:
+                        continue
+                    key, _, vals = line.partition(":")
+                    key = key.strip()
+                    if key:
+                        edited_synonyms[key] = [
+                            v.strip() for v in vals.split(",") if v.strip()
+                        ]
+
+                from src.setup_wizard import WizardOutput, save_wizard_output
+
+                output = WizardOutput(
+                    resume_profile=profile_data,
+                    search_terms=edited_terms,
+                    priority_terms=edited_priority,
+                    synonyms=edited_synonyms,
+                    filter_include=edited_include,
+                    filter_exclude=edited_exclude,
+                    evaluator_patterns=pattern_data,
+                )
+                cfg = _load_config_yaml()
+                files = save_wizard_output(output, cfg)
+                del st.session_state["wizard_preview"]
+                st.success(
+                    f"Configuration saved! {len(files)} files written. "
+                    "Reload the page to see updated configuration."
+                )
+                st.balloons()
+                st.rerun()
+
+        with col_discard:
+            if st.button("Discard", key="wiz_discard"):
+                del st.session_state["wizard_preview"]
+                st.rerun()
 
     # ===================================================================
     # Group 3: Search Configuration
