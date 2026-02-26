@@ -434,7 +434,7 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
     # --- Sidebar Filters ---
     st.sidebar.header("Job Listings Filters")
 
-    # Unevaluated filter: hide jobs already evaluated or skipped
+    # Unevaluated filter: only show jobs not yet in the eval pipeline
     if "eval_status" in df.columns:
         unevaluated_count = (df["eval_status"] == "").sum()
         show_unevaluated_only = st.sidebar.checkbox(
@@ -485,11 +485,10 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
         df = df[df["reposted_date"] != ""]
 
     # --- Main Content ---
-    st.markdown(f"**{len(df)} jobs found**")
-
-    col1, col2, col3, col4, col5 = st.columns(5)
+    current_unreviewed = len(df[df["reviewed_at"] == ""]) if "reviewed_at" in df.columns else len(df)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Jobs", len(df))
+        st.metric("Unreviewed", current_unreviewed)
     with col2:
         if "source" in df.columns:
             st.metric("Sources", df["source"].nunique())
@@ -499,8 +498,6 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
     with col4:
         repost_count = (df["reposted_date"] != "").sum()
         st.metric("Reposted", repost_count)
-    with col5:
-        st.metric("Reviewed", reviewed_count)
 
     if "source" in df.columns:
         with st.expander("Source Breakdown"):
@@ -653,6 +650,21 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
             link_parts.append(f"[Apply Direct (Employer Site)]({direct_url})")
         if link_parts:
             st.markdown(" | ".join(link_parts))
+
+        # Copyable summary for pasting into chat/notes
+        copy_lines = [
+            f"Title: {row.get('title', 'N/A')}",
+            f"Company: {row.get('company', 'N/A')}",
+            f"Location: {row.get('location', 'N/A')}",
+            f"Source: {row.get('source', 'N/A')}",
+            f"Posted: {row.get('date_posted', 'N/A')}",
+        ]
+        if url:
+            copy_lines.append(f"URL: {url}")
+        copy_text = "\n".join(copy_lines)
+        with st.expander("Copy Job Info"):
+            st.text_area("Select all and copy (Cmd+A, Cmd+C):",
+                         value=copy_text, height=120, key="jl_copy_info")
     elif len(stored) > 1:
         st.info(f"{len(stored)} jobs selected — click a review button above.")
 
@@ -729,6 +741,8 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
 
     if "eval_grid_version" not in st.session_state:
         st.session_state.eval_grid_version = 0
+    if "eval_just_reviewed" not in st.session_state:
+        st.session_state.eval_just_reviewed = set()
 
     eval_df = load_evaluation_data(df)
 
@@ -739,6 +753,10 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
 
     # Merge reviewed timestamps
     eval_df["reviewed_at"] = eval_df["job_url"].map(reviewed_data).fillna("")
+
+    # Hide items marked as reviewed during this session
+    if st.session_state.eval_just_reviewed:
+        eval_df = eval_df[~eval_df["job_url"].isin(st.session_state.eval_just_reviewed)]
 
     # --- Sidebar Filters ---
     st.sidebar.header("Evaluation Filters")
@@ -772,9 +790,8 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
         eval_df = eval_df[eval_df["reviewed_at"] == ""]
 
     if "description_available" in eval_df.columns:
-        title_only_count = (~eval_df["description_available"].astype(bool)).sum()
         show_title_only = st.sidebar.checkbox(
-            f"Title-only jobs only ({title_only_count})", value=False, key="eval_title_only"
+            "Title-only jobs only", value=False, key="eval_title_only"
         )
         if show_title_only:
             eval_df = eval_df[~eval_df["description_available"].astype(bool)]
@@ -801,21 +818,19 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
 
     # --- Summary Metrics ---
     total_eval = len(eval_df)
+    eval_unreviewed = len(eval_df[eval_df["reviewed_at"] == ""]) if "reviewed_at" in eval_df.columns else total_eval
     apply_count = len(eval_df[eval_df.get("recommendation", pd.Series()) == "apply"]) if "recommendation" in eval_df.columns else 0
     maybe_count = len(eval_df[eval_df.get("recommendation", pd.Series()) == "maybe"]) if "recommendation" in eval_df.columns else 0
-    skip_count = len(eval_df[eval_df.get("recommendation", pd.Series()) == "skip"]) if "recommendation" in eval_df.columns else 0
     avg_score = round(eval_df["fit_score"].mean(), 1) if "fit_score" in eval_df.columns and total_eval > 0 else 0
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("Total Evaluated", total_eval)
+        st.metric("Unreviewed", eval_unreviewed)
     with c2:
         st.metric("Apply", apply_count)
     with c3:
         st.metric("Maybe", maybe_count)
     with c4:
-        st.metric("Skip", skip_count)
-    with c5:
         st.metric("Avg Score", avg_score)
 
     # --- AG Grid ---
@@ -962,6 +977,10 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
                     mark_unreviewed(u)
             st.session_state.eval_selected = []
             st.session_state.eval_grid_version += 1
+            if do_review:
+                st.session_state.eval_just_reviewed.update(stored_urls)
+            elif do_unreview:
+                st.session_state.eval_just_reviewed.difference_update(stored_urls)
             st.rerun()
 
     # Detail panel for single selected row
@@ -1001,6 +1020,25 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
             link_parts.append(f"[Apply Direct (Employer Site)]({direct_url})")
         if link_parts:
             st.markdown(" | ".join(link_parts))
+
+        # Copyable summary for pasting into chat/notes
+        copy_lines = [
+            f"Title: {row.get('title', 'N/A')}",
+            f"Company: {row.get('company', 'N/A')}",
+            f"Location: {row.get('location', 'N/A')}",
+            f"Fit Score: {score} ({bucket}) - {rec}",
+            f"Domain Match: {row.get('domain_match', 'N/A')}",
+            f"Source: {row.get('source', 'N/A')}",
+            f"Posted: {row.get('date_posted', 'N/A')}",
+        ]
+        if reasoning:
+            copy_lines.append(f"Reasoning: {reasoning}")
+        if url:
+            copy_lines.append(f"URL: {url}")
+        copy_text = "\n".join(copy_lines)
+        with st.expander("Copy Job Info"):
+            st.text_area("Select all and copy (Cmd+A, Cmd+C):",
+                         value=copy_text, height=150, key="eval_copy_info")
 
         # Job description if available
         if "description" in eval_df.columns:

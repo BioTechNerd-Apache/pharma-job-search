@@ -672,6 +672,44 @@ def run_evaluation_pipeline(
     total = len(jobs_df)
     logger.info(f"Evaluation pipeline starting with {total} jobs")
 
+    # Stage 0: Skip jobs already reviewed in the dashboard
+    reviewed_skip_count = 0
+    reviewed_skipped_urls = []
+    try:
+        reviewed_path = Path(__file__).resolve().parent.parent / "data" / "reviewed.json"
+        if reviewed_path.exists():
+            import json as _json
+            with open(reviewed_path, "r") as f:
+                reviewed_urls = set(_json.load(f).keys())
+            remaining = []
+            for _, row in jobs_df.iterrows():
+                job_url = row.get("job_url", "")
+                if job_url in reviewed_urls and not store.is_evaluated(job_url):
+                    reviewed_skip_count += 1
+                    reviewed_skipped_urls.append(job_url)
+                    store.add_evaluation(job_url, {
+                        "fit_score": 0,
+                        "fit_bucket": "manually_reviewed",
+                        "recommendation": "skip",
+                        "domain_match": "N/A",
+                        "reasoning": "Already reviewed manually \u2014 skipped retroactive evaluation",
+                        "description_available": False,
+                        "evaluated_timestamp": pd.Timestamp.now().isoformat(),
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                    })
+                else:
+                    remaining.append(row)
+            if reviewed_skip_count:
+                jobs_df = pd.DataFrame(remaining)
+                store.save()
+                _update_eval_status_in_csv([], reviewed_skipped_urls)
+                logger.info(f"Stage 0: {reviewed_skip_count} already-reviewed jobs stamped as manually_reviewed")
+    except Exception as e:
+        logger.warning(f"Could not check reviewed status: {e}")
+
+    total = len(jobs_df)
+
     # Stage 1: Pre-filter
     skip_count = 0
     boost_count = 0
@@ -719,6 +757,7 @@ def run_evaluation_pipeline(
             "to_evaluate": len(evaluate_jobs),
             "evaluated": 0,
             "already_evaluated": 0,
+            "reviewed_skipped": reviewed_skip_count,
         }
 
     # Filter out already-evaluated jobs (unless re_evaluate)
@@ -751,6 +790,7 @@ def run_evaluation_pipeline(
             "to_evaluate": len(evaluate_jobs),
             "evaluated": 0,
             "already_evaluated": already_evaluated,
+            "reviewed_skipped": reviewed_skip_count,
             "descriptions_fetched": 0,
         }
 
@@ -801,6 +841,7 @@ def run_evaluation_pipeline(
         "to_evaluate": len(evaluate_jobs),
         "evaluated": len(results),
         "already_evaluated": already_evaluated,
+        "reviewed_skipped": reviewed_skip_count,
         "descriptions_fetched": descriptions_fetched,
     }
 
