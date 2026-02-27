@@ -298,38 +298,39 @@ def load_resume_profile(config: EvaluationConfig) -> dict:
         return json.load(f)
 
 
-def _build_system_prompt(profile: dict) -> str:
+def _load_prompt_config(prompt_config_path: str) -> dict:
+    """Load domain calibration and scoring rules from YAML file."""
+    path = Path(prompt_config_path)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent.parent / prompt_config_path
+    if path.exists():
+        import yaml
+        with open(path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def _build_system_prompt(profile: dict, prompt_config_path: str = "data/evaluator_prompt.yaml") -> str:
     """Build the system prompt for Claude API evaluation."""
+    prompt_cfg = _load_prompt_config(prompt_config_path)
+
+    domain_lines = "\n".join(
+        f"- {item}" for item in prompt_cfg.get("domain_calibration", [])
+    )
+    scoring_lines = "\n".join(
+        f"- {item}" for item in prompt_cfg.get("scoring_rules", [])
+    )
+
     return f"""You are a job-fit evaluator for a senior scientist in pharma/biotech.
 
 CANDIDATE PROFILE:
 {json.dumps(profile, indent=2)}
 
 DOMAIN CALIBRATION (from historical fit assessments):
-- CRO management / bioanalytical outsourcing: 70%+
-- Gene therapy bioanalytical (AAV, lentiviral, LNP): 65-75%
-- Cell therapy analytical (CAR-T): 65-70%
-- Flow cytometry / immunophenotyping: strong fit
-- Biomarker / translational: 60-75%
-- Cell biology / in vitro assay development: 60-65%
-- Molecular diagnostics / qPCR-focused: 60-65%
-- NAMs / in vitro tox / 3D models: moderate
-- Oncology target validation: 55-60%
-- CMC analytical with qPCR/ddPCR: 50-55%
-- IVD / analytical validation: 55-60%
-- GMP AS&T / QC analytical (with qPCR overlap): 55-60%
-- Drug discovery / pharmacology / in vivo: usually skip
-- Biologics CMC (HPLC/CE/protein): skip
-- cGMP / QA / manufacturing: skip
-- Computational biology: skip
-- Organic/process chemistry: skip
+{domain_lines}
 
 SCORING RULES:
-- Score 0-100 based on overlap between candidate skills and STATED job requirements
-- fit_bucket: strong (70+), moderate (55-69), weak (40-54), poor (<40)
-- recommendation: apply (60+), maybe (45-59), skip (<45)
-- If the description is a generic company blurb with no specific job requirements, treat it as title-only
-- TITLE-ONLY or THIN DESCRIPTION: If the job has no description or only a brief/generic snippet with no specific requirements listed, cap the score at 50 maximum. Note "limited info — title-only assessment" in reasoning. Only match on what the title explicitly indicates (e.g., "Bioanalytical Scientist" matches bioanalytical domain, but do NOT infer specific techniques)
+{scoring_lines}
 
 OUTPUT FORMAT — respond with ONLY valid JSON, no markdown:
 {{
@@ -526,7 +527,7 @@ async def evaluate_batch(
 
     client = create_ai_client(config)
     profile = load_resume_profile(config)
-    system_prompt = _build_system_prompt(profile)
+    system_prompt = _build_system_prompt(profile, config.prompt_config)
 
     results = []
     total = len(jobs_df)

@@ -119,6 +119,7 @@ class EvaluationConfig:
     default_days: int = 1
     description_max_chars: int = 6000
     evaluator_patterns: str = "data/evaluator_patterns.yaml"
+    prompt_config: str = "data/evaluator_prompt.yaml"
 
     def get_api_key(self) -> str:
         # 1. New generic api_key field
