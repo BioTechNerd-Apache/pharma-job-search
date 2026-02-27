@@ -454,6 +454,21 @@ async def evaluate_single_job(
                 if dm and not dm.startswith("[Title Only]"):
                     result["domain_match"] = f"[Title Only] {dm}"
 
+            # Safety net: if model identified thin/generic description in reasoning
+            # but description_available=True (generic blurb case), force [Thin JD] prefix
+            # so domain_match is never hallucinated from candidate profile
+            if description_available:
+                reasoning_lower = result.get("reasoning", "").lower()
+                thin_signals = [
+                    "thin description", "thin-description", "title-only", "title only",
+                    "no specific", "generic", "limited info", "no description",
+                    "no specific requirements", "no substantive",
+                ]
+                is_thin = any(sig in reasoning_lower for sig in thin_signals)
+                dm = result.get("domain_match", "")
+                if is_thin and dm and not dm.startswith("[Thin JD]") and not dm.startswith("[Title Only]"):
+                    result["domain_match"] = f"[Thin JD] {dm}"
+
             result["description_available"] = description_available
             result["input_tokens"] = response.input_tokens
             result["output_tokens"] = response.output_tokens
