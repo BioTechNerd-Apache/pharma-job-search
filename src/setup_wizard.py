@@ -32,6 +32,7 @@ class WizardOutput:
     filter_include: list[str] = field(default_factory=list)
     filter_exclude: list[str] = field(default_factory=list)
     evaluator_patterns: dict[str, list[str]] = field(default_factory=dict)
+    evaluator_prompt: dict[str, list[str]] = field(default_factory=dict)
     api_keys: dict[str, str] = field(default_factory=dict)
 
 
@@ -290,6 +291,81 @@ IMPORTANT: All patterns must be valid Python regex. Use \\b for word boundaries.
     return result
 
 
+def call_generate_evaluator_prompt(client, profile: dict) -> dict:
+    """AI Call 4: Generate personalized evaluator_prompt.yaml (domain calibration + scoring rules)."""
+
+    # Load the existing file as a concrete example so the AI sees the exact format
+    example_path = PROJECT_ROOT / "data" / "evaluator_prompt.yaml"
+    example_yaml = ""
+    if example_path.is_file():
+        with open(example_path, "r") as f:
+            example_yaml = f.read()
+
+    system = """You are an expert at calibrating AI-powered job-fit scoring for pharma/biotech candidates.
+Given a candidate profile, generate a personalized evaluator prompt config.
+Output ONLY valid JSON with two keys: "domain_calibration" (list of strings) and "scoring_rules" (list of strings).
+No markdown fences or explanation."""
+
+    user_content = f"""Generate a personalized job-fit evaluator prompt config for this candidate.
+
+CANDIDATE PROFILE:
+{json.dumps(profile, indent=2)}
+
+EXAMPLE OUTPUT FORMAT (for a different bioanalytical candidate — adapt to this candidate's actual background):
+{example_yaml}
+
+INSTRUCTIONS:
+
+1. "domain_calibration" (12-20 strings): One line per domain category, with a score range.
+   - Derive from the profile's strongest_fit_domains (65-80%), moderate_fit_domains (50-65%),
+     and skip_domains (score "skip" or "usually skip").
+   - Add nuanced sub-categories where the profile suggests partial overlap.
+   - Format: "Domain description: score range" (e.g., "Flow cytometry / immunophenotyping: strong fit")
+
+2. "scoring_rules" (5-9 strings): Scoring instructions for the AI evaluator.
+   - ALWAYS include these two universal rules verbatim as the first two items:
+     * "Score 0-100 based on overlap between candidate skills and STATED job requirements"
+     * "fit_bucket: strong (70+), moderate (55-69), weak (40-54), poor (<40)"
+     * "recommendation: apply (60+), maybe (45-59), skip (<45)"
+     * "If the description is a generic company blurb with no specific job requirements, treat it as title-only"
+     * "TITLE-ONLY or THIN DESCRIPTION: If the job has no description or only a brief/generic snippet with no specific requirements listed, cap the score at 50 maximum. Note \\"limited info — title-only assessment\\" in reasoning. Only match on what the title explicitly indicates. IMPORTANT: for domain_match, use the format \\"[Thin JD] <domain inferred from title only>\\" — never infer techniques or platforms from the candidate profile when the description is thin or generic."
+   - Then add 2-4 PENALTY RULES specific to this candidate's gaps. Derive these from:
+     * never_claim fields: if a candidate has never done X, any role where X is the PRIMARY skill should be capped at 35
+     * skip_domains: roles in these domains should be capped at 35
+     * Career-level mismatches (if applicable): roles clearly too junior/senior
+   - Each penalty rule must: (a) name the role type clearly, (b) state what triggers it, (c) state the cap score, (d) explain why.
+   - Keep penalty rules precise — avoid over-broad penalties that would wrongly cap borderline roles."""
+
+    response = client.create_message(system=system, user_content=user_content, max_tokens=4096)
+
+    raw = response.text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        retry = client.create_message(
+            system="",
+            user_content=f"Fix this invalid JSON and return ONLY valid JSON:\n{raw}",
+            max_tokens=4096,
+        )
+        raw2 = retry.text.strip()
+        if raw2.startswith("```"):
+            raw2 = re.sub(r"^```(?:json)?\s*", "", raw2)
+            raw2 = re.sub(r"\s*```$", "", raw2)
+        result = json.loads(raw2)
+
+    # Validate structure
+    if not isinstance(result.get("domain_calibration"), list):
+        result["domain_calibration"] = []
+    if not isinstance(result.get("scoring_rules"), list):
+        result["scoring_rules"] = []
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # API Key Setup
 # ---------------------------------------------------------------------------
@@ -433,6 +509,15 @@ def save_wizard_output(output: WizardOutput, existing_config: dict) -> list[str]
                       sort_keys=False, allow_unicode=True)
         files_written.append(str(patterns_path))
 
+    # 2b. Evaluator prompt YAML (domain calibration + scoring rules)
+    if output.evaluator_prompt:
+        prompt_path = data_dir / "evaluator_prompt.yaml"
+        _backup_file(prompt_path)
+        with open(prompt_path, "w") as f:
+            yaml.dump(output.evaluator_prompt, f, default_flow_style=False,
+                      sort_keys=False, allow_unicode=True)
+        files_written.append(str(prompt_path))
+
     # 3. Update config.yaml with search terms, filters, synonyms, and API keys
     config = dict(existing_config)
 
@@ -474,6 +559,7 @@ def save_wizard_output(output: WizardOutput, existing_config: dict) -> list[str]
     config["evaluation"].setdefault("resume_profile", "data/resume_profile.json")
     config["evaluation"].setdefault("evaluations_store", "data/evaluations.json")
     config["evaluation"].setdefault("evaluator_patterns", "data/evaluator_patterns.yaml")
+    config["evaluation"].setdefault("prompt_config", "data/evaluator_prompt.yaml")
     config["evaluation"].setdefault("max_concurrent", 5)
     config["evaluation"].setdefault("delay_between_calls", 0.5)
     config["evaluation"].setdefault("max_retries", 5)
@@ -681,12 +767,33 @@ def run_cli_wizard(resume_path: str) -> bool:
             return False
         output.evaluator_patterns = {}
 
-    # Step 7: Save all files
-    print("\nStep 7: Saving configuration files...")
+    # Step 7: Generate evaluator prompt (domain calibration + scoring rules)
+    print("\nStep 7: Generating evaluator prompt config...")
+    try:
+        evaluator_prompt = call_generate_evaluator_prompt(client, profile)
+        output.evaluator_prompt = evaluator_prompt
+    except Exception as e:
+        print(f"  Error generating evaluator prompt: {e}")
+        return False
+
+    print(f"  Domain calibration entries: {len(evaluator_prompt.get('domain_calibration', []))}")
+    print(f"  Scoring rules: {len(evaluator_prompt.get('scoring_rules', []))}")
+
+    if not _prompt_yes_no("\n  Accept evaluator prompt config?"):
+        choice = _prompt_choice("  What would you like to do?", ["Skip prompt config", "Cancel setup"])
+        if choice == "Cancel setup":
+            print("  Setup cancelled.")
+            return False
+        output.evaluator_prompt = {}
+
+    # Step 8: Save all files
+    print("\nStep 8: Saving configuration files...")
     print("  Files to be written:")
     print(f"    - data/resume_profile.json")
     if output.evaluator_patterns:
         print(f"    - data/evaluator_patterns.yaml")
+    if output.evaluator_prompt:
+        print(f"    - data/evaluator_prompt.yaml")
     print(f"    - config.yaml (search terms, filters, API keys)")
 
     if not _prompt_yes_no("\n  Proceed with saving?"):

@@ -1099,6 +1099,28 @@ def _save_evaluator_patterns(data: dict):
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 
+def _load_evaluator_prompt() -> dict:
+    """Load evaluator prompt YAML (domain calibration + scoring rules)."""
+    import yaml
+    path = PROJECT_ROOT / "data" / "evaluator_prompt.yaml"
+    if path.is_file():
+        try:
+            with open(path, "r") as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_evaluator_prompt(data: dict):
+    """Save evaluator prompt YAML (domain calibration + scoring rules)."""
+    import yaml
+    path = PROJECT_ROOT / "data" / "evaluator_prompt.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
 def _load_config_yaml() -> dict:
     """Load config.yaml."""
     import yaml
@@ -1416,26 +1438,33 @@ def render_setup_tab():
                     call_generate_profile,
                     call_generate_search_config,
                     call_generate_evaluator_patterns,
+                    call_generate_evaluator_prompt,
                 )
                 profile_data = call_generate_profile(client, resume_text)
                 name = profile_data.get("name", "Unknown")
                 status.write(f"Profile generated for: {name}")
 
                 # Step 3: Generate search config
-                status.write("Generating search configuration (AI Call 2/3)...")
+                status.write("Generating search configuration (AI Call 2/4)...")
                 search_data = call_generate_search_config(client, profile_data)
                 status.write(f"Generated {len(search_data.get('search_terms', []))} search terms")
 
                 # Step 4: Generate patterns
-                status.write("Generating evaluator patterns (AI Call 3/3)...")
+                status.write("Generating evaluator patterns (AI Call 3/4)...")
                 pattern_data = call_generate_evaluator_patterns(client, profile_data)
                 status.write(f"Generated {len(pattern_data.get('skip_title_patterns', []))} skip patterns")
+
+                # Step 5: Generate evaluator prompt (domain calibration + scoring rules)
+                status.write("Generating scoring calibration (AI Call 4/4)...")
+                prompt_data = call_generate_evaluator_prompt(client, profile_data)
+                status.write(f"Generated {len(prompt_data.get('domain_calibration', []))} domain calibration entries")
 
                 # Store results for preview — do NOT save yet
                 st.session_state["wizard_preview"] = {
                     "profile": profile_data,
                     "search": search_data,
                     "patterns": pattern_data,
+                    "evaluator_prompt": prompt_data,
                 }
                 status.update(label="Generation complete — review below", state="complete")
 
@@ -1452,6 +1481,7 @@ def render_setup_tab():
         profile_data = preview["profile"]
         search_data = preview["search"]
         pattern_data = preview["patterns"]
+        prompt_data = preview.get("evaluator_prompt", {})
 
         st.subheader("Review AI-Generated Configuration")
         st.info(
@@ -1512,9 +1542,36 @@ def render_setup_tab():
                 key="wiz_synonyms",
             )
 
-        # Evaluator patterns (read-only)
-        with st.expander("Evaluator Patterns (read-only)", expanded=False):
+        # Evaluator patterns (read-only summary)
+        with st.expander("Evaluator Patterns (read-only — edit after saving in Scoring & Patterns section)", expanded=False):
             st.json(pattern_data)
+
+        # Scoring calibration (editable)
+        st.subheader("Scoring Calibration")
+        st.caption(
+            "These rules tell the AI how to score each job category and what to penalize. "
+            "Edit before saving — or update later in the Scoring Configuration section below."
+        )
+        col_dom, col_rules = st.columns(2)
+        with col_dom:
+            domain_list = prompt_data.get("domain_calibration", [])
+            wiz_domain_cal = st.text_area(
+                f"Domain Calibration ({len(domain_list)} entries, one per line)",
+                value="\n".join(domain_list),
+                height=250,
+                key="wiz_domain_calibration",
+                help="One entry per line. Format: 'Domain name: score range' "
+                     "e.g. 'Gene therapy bioanalytical: 65-75%'",
+            )
+        with col_rules:
+            rules_list = prompt_data.get("scoring_rules", [])
+            wiz_scoring_rules = st.text_area(
+                f"Scoring Rules ({len(rules_list)} rules, one per line)",
+                value="\n".join(rules_list),
+                height=250,
+                key="wiz_scoring_rules",
+                help="One rule per line. Penalty rules cap mismatched roles at a max score.",
+            )
 
         # Save / Discard buttons
         col_save, col_discard = st.columns(2)
@@ -1546,6 +1603,18 @@ def render_setup_tab():
                             v.strip() for v in vals.split(",") if v.strip()
                         ]
 
+                # Parse domain calibration and scoring rules
+                edited_domain_cal = [
+                    line.strip() for line in wiz_domain_cal.split("\n") if line.strip()
+                ]
+                edited_scoring_rules = [
+                    line.strip() for line in wiz_scoring_rules.split("\n") if line.strip()
+                ]
+                edited_evaluator_prompt = {
+                    "domain_calibration": edited_domain_cal,
+                    "scoring_rules": edited_scoring_rules,
+                }
+
                 from src.setup_wizard import WizardOutput, save_wizard_output
 
                 output = WizardOutput(
@@ -1556,6 +1625,7 @@ def render_setup_tab():
                     filter_include=edited_include,
                     filter_exclude=edited_exclude,
                     evaluator_patterns=pattern_data,
+                    evaluator_prompt=edited_evaluator_prompt,
                 )
                 cfg = _load_config_yaml()
                 files = save_wizard_output(output, cfg)
@@ -1791,7 +1861,53 @@ def render_setup_tab():
                 "or the built-in patterns will be used automatically.")
 
     # ===================================================================
-    # Group 5: Advanced (collapsed)
+    # Group 5: Scoring Configuration
+    # ===================================================================
+    st.header("Scoring Configuration")
+    st.caption(
+        "Domain calibration tells the AI what score range to assign each job category. "
+        "Scoring rules define caps and penalties for mismatched roles. "
+        "Changes here are saved immediately to `data/evaluator_prompt.yaml` and take effect on the next evaluation run."
+    )
+
+    eval_prompt = _load_evaluator_prompt()
+
+    if eval_prompt:
+        ep_domain_list = eval_prompt.get("domain_calibration", [])
+        ep_rules_list = eval_prompt.get("scoring_rules", [])
+
+        col_epd, col_epr = st.columns(2)
+        with col_epd:
+            ep_domain_text = st.text_area(
+                f"Domain Calibration ({len(ep_domain_list)} entries)",
+                value="\n".join(ep_domain_list),
+                height=300,
+                key="ep_domain_calibration",
+                help="One entry per line. Format: 'Domain name: score range' "
+                     "e.g. 'Gene therapy bioanalytical: 65-75%'",
+            )
+        with col_epr:
+            ep_rules_text = st.text_area(
+                f"Scoring Rules ({len(ep_rules_list)} rules)",
+                value="\n".join(ep_rules_list),
+                height=300,
+                key="ep_scoring_rules",
+                help="One rule per line. First 5 are universal rules; add/edit penalty rules below them.",
+            )
+
+        if st.button("Save Scoring Config", key="ep_save_prompt"):
+            new_domain = [l.strip() for l in ep_domain_text.split("\n") if l.strip()]
+            new_rules = [l.strip() for l in ep_rules_text.split("\n") if l.strip()]
+            _save_evaluator_prompt({"domain_calibration": new_domain, "scoring_rules": new_rules})
+            st.success(f"Scoring config saved — {len(new_domain)} domain entries, {len(new_rules)} rules.")
+    else:
+        st.info(
+            "No scoring config found. Run the Setup Wizard to generate one, "
+            "or create `data/evaluator_prompt.yaml` manually."
+        )
+
+    # ===================================================================
+    # Group 6: Advanced (collapsed)
     # ===================================================================
     st.header("Advanced")
 
