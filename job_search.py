@@ -140,10 +140,35 @@ def _create_macos_shortcut(launch_cmd: str) -> bool:
     return True
 
 
+def _get_windows_desktop() -> Path:
+    """Get the actual Windows Desktop path, handling OneDrive redirection."""
+    # Try registry first (works with OneDrive-redirected Desktop)
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
+        desktop, _ = winreg.QueryValueEx(key, "Desktop")
+        winreg.CloseKey(key)
+        p = Path(desktop)
+        if p.exists():
+            return p
+    except Exception:
+        pass
+    # Fallback: check OneDrive Desktop, then standard Desktop
+    for candidate in [
+        Path.home() / "OneDrive" / "Desktop",
+        Path.home() / "Desktop",
+    ]:
+        if candidate.exists():
+            return candidate
+    # Last resort: standard path (may not exist — will fail on write)
+    return Path.home() / "Desktop"
+
+
 def _create_windows_shortcut(launch_cmd: str) -> bool:
     """Create a .bat shortcut on Windows Desktop."""
     project_dir = str(PROJECT_ROOT)
-    shortcut = Path.home() / "Desktop" / "Pharma Job Search.bat"
+    shortcut = _get_windows_desktop() / "Pharma Job Search.bat"
     shortcut.write_text(
         f"@echo off\r\n"
         f"REM Pharma/Biotech Job Search Dashboard launcher\r\n"
