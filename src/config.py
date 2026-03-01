@@ -212,7 +212,7 @@ def build_config(cli_args: Optional[dict] = None) -> AppConfig:
     config = AppConfig()
 
     # Apply YAML values
-    search_raw = raw.get("search", {})
+    search_raw = raw.get("search") or {}
     for key in ("terms", "sites", "days", "results_per_site",
                 "priority_results_per_site", "priority_terms",
                 "delay_between_searches",
@@ -221,27 +221,27 @@ def build_config(cli_args: Optional[dict] = None) -> AppConfig:
         if key in search_raw:
             setattr(config.search, key, search_raw[key])
 
-    usajobs_raw = raw.get("usajobs", {})
+    usajobs_raw = raw.get("usajobs") or {}
     for key in ("api_key", "email", "keywords"):
         if key in usajobs_raw:
             setattr(config.usajobs, key, usajobs_raw[key])
 
-    adzuna_raw = raw.get("adzuna", {})
+    adzuna_raw = raw.get("adzuna") or {}
     for key in ("app_id", "app_key", "keywords", "results_per_page", "max_pages"):
         if key in adzuna_raw:
             setattr(config.adzuna, key, adzuna_raw[key])
 
-    jooble_raw = raw.get("jooble", {})
+    jooble_raw = raw.get("jooble") or {}
     for key in ("api_key", "keywords", "max_pages"):
         if key in jooble_raw:
             setattr(config.jooble, key, jooble_raw[key])
 
-    output_raw = raw.get("output", {})
+    output_raw = raw.get("output") or {}
     for key in ("directory", "filename_prefix", "formats"):
         if key in output_raw:
             setattr(config.output, key, output_raw[key])
 
-    dashboard_raw = raw.get("dashboard", {})
+    dashboard_raw = raw.get("dashboard") or {}
     for key in ("port", "max_results"):
         if key in dashboard_raw:
             setattr(config.dashboard, key, dashboard_raw[key])
@@ -251,7 +251,7 @@ def build_config(cli_args: Optional[dict] = None) -> AppConfig:
         if key in wizard_raw:
             setattr(config.wizard, key, wizard_raw[key])
 
-    evaluation_raw = raw.get("evaluation", {})
+    evaluation_raw = raw.get("evaluation") or {}
     for key in ("provider", "api_key", "base_url",
                 "anthropic_api_key", "model", "resume_profile", "evaluations_store",
                 "max_concurrent", "delay_between_calls", "max_retries", "default_days",
