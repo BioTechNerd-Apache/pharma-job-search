@@ -135,6 +135,13 @@ config.yaml
 |  REPOST TRACKING:                                                   |
 |    Extracts all date_posted values from duplicate groups             |
 |    Stores earliest as reposted_date on survivor                     |
+|                                                                     |
+|  FUZZY-KEY HELPERS (for cross-run repost blocking):                 |
+|    make_fuzzy_key(title, company, state)                            |
+|      -> canonical key matching Layer 2 format                       |
+|    load_reviewed_fkeys() -> set of historically reviewed fkeys      |
+|    load_reviewed_fkeys_raw() -> {fkey: {url, timestamp}}            |
+|    save_reviewed_fkeys(dict) -> writes data/reviewed_fkeys.json     |
 +============================+=======================================+
                              |
                              v
@@ -148,6 +155,20 @@ config.yaml
 |                                                                     |
 |  Preserves eval_status column across merges                         |
 |  migrate_old_files(): one-time merge of legacy timestamped CSVs     |
+|                                                                     |
+|  FUZZY-KEY FILTER (cross-run repost blocking):                      |
+|    Runs before deduplicate() on every merge:                        |
+|    1. Load reviewed_fkeys.json (company|title|state keys)           |
+|    2. Drop any new row whose fkey matches a reviewed fkey           |
+|       UNLESS its job_url is the canonical reviewed URL              |
+|    -> Prevents reposted jobs (new LinkedIn ID / Indeed jk= param)   |
+|       from re-entering master CSV after being reviewed              |
+|                                                                     |
+|  FIRST-RUN MIGRATION:                                               |
+|    On first call after upgrade, if reviewed_fkeys.json is absent:   |
+|    Iterates master CSV rows that are in reviewed.json               |
+|    Builds fkeys retroactively (~3,500-4,000 entries)                |
+|    Writes reviewed_fkeys.json — migration never runs again          |
 +====================================================================+
 ```
 
@@ -395,8 +416,13 @@ pharma_jobs.csv + evaluations.json + reviewed.json
 |  +------------------------------------------------------------------+  |
 |  | User clicks checkbox -> selectionChanged -> stored in             |  |
 |  |   st.session_state (keyed by job_url)                            |  |
-|  | User clicks [Mark Reviewed] -> writes to data/reviewed.json      |  |
-|  |   {job_url: "YYYY-MM-DD HH:MM"}                                 |  |
+|  | User clicks [Mark Reviewed]:                                      |  |
+|  |   -> writes {job_url: "YYYY-MM-DD HH:MM"} to reviewed.json      |  |
+|  |   -> writes {company|title|state: {url, timestamp}}              |  |
+|  |      to reviewed_fkeys.json (blocks future reposts)              |  |
+|  | User clicks [Undo Review]:                                        |  |
+|  |   -> removes entry from reviewed.json                            |  |
+|  |   -> removes matching fkey from reviewed_fkeys.json              |  |
 |  | getRowId(job_url) ensures stable row identity across reruns      |  |
 |  | Deterministic sort (fit_score desc + job_url asc) prevents       |  |
 |  |   row rearrangement on selectionChanged reruns                   |  |
@@ -474,6 +500,9 @@ pharma_jobs.csv + evaluations.json + reviewed.json
 - Dedup gives reviewed jobs +1000 richness bonus (never lose user work)
 - Stage 0 in eval pipeline stamps reviewed-but-unevaluated jobs as manually_reviewed
 - eval_status in CSV updated so Jobs tab filter stays in sync
+- reviewed_fkeys.json indexes company|title|state for every reviewed job
+  so reposted listings (new LinkedIn ID / new Indeed jk= param) are dropped
+  before entering master CSV — prevents reviewed jobs from resurfacing
 
 ### Jooble API Limitation
 - Jooble API returns only a `snippet` (short preview), not full job description
