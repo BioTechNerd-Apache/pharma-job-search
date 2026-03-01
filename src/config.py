@@ -246,7 +246,7 @@ def build_config(cli_args: Optional[dict] = None) -> AppConfig:
         if key in dashboard_raw:
             setattr(config.dashboard, key, dashboard_raw[key])
 
-    wizard_raw = raw.get("wizard", {})
+    wizard_raw = raw.get("wizard") or {}
     for key in ("provider", "api_key", "base_url", "model"):
         if key in wizard_raw:
             setattr(config.wizard, key, wizard_raw[key])

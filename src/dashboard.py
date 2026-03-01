@@ -22,6 +22,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
 from src.config import build_config, PROJECT_ROOT, DEFAULT_CONFIG_PATH
 from src.exporter import get_master_path
+from src.dedup import make_fuzzy_key, load_reviewed_fkeys_raw, save_reviewed_fkeys
 
 st.set_page_config(
     page_title="Pharma/Biotech Job Search",
@@ -131,11 +132,21 @@ def save_reviewed(reviewed: dict):
         json.dump(reviewed, f, indent=2)
 
 
-def mark_reviewed(job_url: str):
+def mark_reviewed(job_url: str, row: dict | None = None):
     """Mark a job as reviewed with current timestamp."""
     reviewed = load_reviewed()
     reviewed[job_url] = datetime.now().strftime("%Y-%m-%d %H:%M")
     save_reviewed(reviewed)
+    if row:
+        fk = make_fuzzy_key(
+            str(row.get("title", "")),
+            str(row.get("company", "")),
+            str(row.get("state", "")),
+        )
+        if fk != "||":
+            fkeys = load_reviewed_fkeys_raw()
+            fkeys[fk] = {"url": job_url, "timestamp": reviewed[job_url]}
+            save_reviewed_fkeys(fkeys)
 
 
 def mark_unreviewed(job_url: str):
@@ -143,6 +154,13 @@ def mark_unreviewed(job_url: str):
     reviewed = load_reviewed()
     reviewed.pop(job_url, None)
     save_reviewed(reviewed)
+    fkeys = load_reviewed_fkeys_raw()
+    to_del = [k for k, v in fkeys.items()
+              if isinstance(v, dict) and v.get("url") == job_url]
+    if to_del:
+        for k in to_del:
+            del fkeys[k]
+        save_reviewed_fkeys(fkeys)
 
 
 def extract_job_code(url: str, source: str) -> str:
@@ -595,7 +613,7 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
     stored_urls = [r.get("job_url", "") for r in stored if r.get("job_url", "")]
 
     # Review buttons
-    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 6])
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1, 1, 1, 4])
     with btn_col1:
         do_review = st.button(
             f"Mark as Reviewed ({len(stored_urls)})" if stored_urls else "Mark as Reviewed",
@@ -606,19 +624,35 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
             f"Undo Review ({len(stored_urls)})" if stored_urls else "Undo Review",
             key="jl_unreview_selected",
         )
+    with btn_col3:
+        copy_label = f"Copy Selected ({len(stored_urls)})" if stored_urls else "Copy Selected"
+        do_copy_jl = st.button(copy_label, key="jl_copy_selected")
 
     if do_review or do_unreview:
         if not stored_urls:
             st.warning("No rows selected. Check the boxes next to jobs first.")
         else:
+            stored_by_url = {r.get("job_url", ""): r for r in stored}
             for u in stored_urls:
                 if do_review:
-                    mark_reviewed(u)
+                    mark_reviewed(u, stored_by_url.get(u))
                 else:
                     mark_unreviewed(u)
             st.session_state.jl_selected = []
             st.session_state.grid_version += 1
             st.rerun()
+
+    if do_copy_jl:
+        if not stored:
+            st.warning("No rows selected.")
+        else:
+            keys    = ["title", "company", "location", "state", "date_posted",
+                       "days_since_posted", "source", "job_type", "job_url"]
+            headers = ["Title", "Company", "Location", "State", "Posted",
+                       "Days Old", "Source", "Job Type", "URL"]
+            tsv = _format_rows_as_tsv(stored, keys, headers)
+            st.caption(f"{len(stored)} row(s) — click the copy icon ↗ on the code block:")
+            st.code(tsv, language=None)
 
     if len(stored) == 1:
         row = stored[0]
@@ -665,8 +699,6 @@ def render_job_listings_tab(df: pd.DataFrame, reviewed_data: dict):
         with st.expander("Copy Job Info"):
             st.text_area("Select all and copy (Cmd+A, Cmd+C):",
                          value=copy_text, height=120, key="jl_copy_info")
-    elif len(stored) > 1:
-        st.info(f"{len(stored)} jobs selected — click a review button above.")
 
     # Expandable job descriptions
     st.subheader("Job Descriptions")
@@ -954,7 +986,7 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
     stored_urls = [r.get("job_url", "") for r in stored if r.get("job_url", "")]
 
     # Review buttons
-    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 6])
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1, 1, 1, 4])
     with btn_col1:
         do_review = st.button(
             f"Mark as Reviewed ({len(stored_urls)})" if stored_urls else "Mark as Reviewed",
@@ -965,14 +997,18 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
             f"Undo Review ({len(stored_urls)})" if stored_urls else "Undo Review",
             key="eval_unreview",
         )
+    with btn_col3:
+        copy_label = f"Copy Selected ({len(stored_urls)})" if stored_urls else "Copy Selected"
+        do_copy_eval = st.button(copy_label, key="eval_copy_selected")
 
     if do_review or do_unreview:
         if not stored_urls:
             st.warning("No rows selected. Check the boxes next to jobs first.")
         else:
+            stored_by_url = {r.get("job_url", ""): r for r in stored}
             for u in stored_urls:
                 if do_review:
-                    mark_reviewed(u)
+                    mark_reviewed(u, stored_by_url.get(u))
                 else:
                     mark_unreviewed(u)
             st.session_state.eval_selected = []
@@ -982,6 +1018,18 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
             elif do_unreview:
                 st.session_state.eval_just_reviewed.difference_update(stored_urls)
             st.rerun()
+
+    if do_copy_eval:
+        if not stored:
+            st.warning("No rows selected.")
+        else:
+            keys    = ["title", "company", "fit_score", "fit_bucket", "recommendation",
+                       "domain_match", "date_posted", "source", "job_url"]
+            headers = ["Title", "Company", "Score", "Bucket", "Recommendation",
+                       "Domain Match", "Posted", "Source", "URL"]
+            tsv = _format_rows_as_tsv(stored, keys, headers)
+            st.caption(f"{len(stored)} row(s) — click the copy icon ↗ on the code block:")
+            st.code(tsv, language=None)
 
     # Detail panel for single selected row
     if len(stored) == 1:
@@ -1049,9 +1097,6 @@ def render_evaluation_tab(df: pd.DataFrame, reviewed_data: dict):
                     with st.expander("Full Job Description"):
                         st.markdown(str(desc)[:5000])
 
-    elif len(stored) > 1:
-        st.info(f"{len(stored)} jobs selected — click a review button above.")
-
 
 # ---------------------------------------------------------------------------
 # Tab 3: Setup / Profile
@@ -1097,6 +1142,14 @@ def _save_evaluator_patterns(data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+def _format_rows_as_tsv(rows: list[dict], col_keys: list[str], col_headers: list[str]) -> str:
+    """Format rows as a TSV string (header row + data rows)."""
+    lines = ["\t".join(col_headers)]
+    for row in rows:
+        lines.append("\t".join(str(row.get(k, "")) for k in col_keys))
+    return "\n".join(lines)
 
 
 def _load_evaluator_prompt() -> dict:

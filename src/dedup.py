@@ -26,6 +26,38 @@ def load_reviewed_urls() -> set:
             return set()
     return set()
 
+
+def make_fuzzy_key(title: str, company: str, state: str) -> str:
+    """Canonical fuzzy key — matches Layer 2 format: company|title|state."""
+    return (normalize_text(company) + "|" + normalize_text(title)
+            + "|" + normalize_text(state or ""))
+
+
+def load_reviewed_fkeys_raw() -> dict:
+    """Load {fkey: {url, timestamp}} from reviewed_fkeys.json."""
+    from .config import PROJECT_ROOT
+    path = PROJECT_ROOT / "data" / "reviewed_fkeys.json"
+    if path.exists():
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def load_reviewed_fkeys() -> set:
+    """Return the set of fuzzy keys for historically reviewed jobs."""
+    return set(load_reviewed_fkeys_raw().keys())
+
+
+def save_reviewed_fkeys(fkeys: dict) -> None:
+    from .config import PROJECT_ROOT
+    path = PROJECT_ROOT / "data" / "reviewed_fkeys.json"
+    with open(path, "w") as f:
+        json.dump(fkeys, f, indent=2)
+
+
 # Common company name suffixes/words to strip for fuzzy matching
 COMPANY_STOP_WORDS = {
     "inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation",

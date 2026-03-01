@@ -6,7 +6,9 @@ from pathlib import Path
 import pandas as pd
 
 from .config import OutputConfig, AppConfig, PROJECT_ROOT
-from .dedup import deduplicate
+from .dedup import (deduplicate, make_fuzzy_key, normalize_text,
+                    load_reviewed_urls, load_reviewed_fkeys,
+                    load_reviewed_fkeys_raw, save_reviewed_fkeys)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +92,24 @@ def merge_and_export_csv(new_df: pd.DataFrame, config: AppConfig) -> Path:
             logger.warning(f"Could not read existing master CSV: {e}")
             existing = None
 
+    # First-run migration: build reviewed_fkeys.json from current master CSV rows
+    fkeys_path = master_path.parent / "reviewed_fkeys.json"
+    if not fkeys_path.exists() and existing is not None and not existing.empty:
+        rev_url_set = load_reviewed_urls()
+        fkeys = {}
+        for _, row in existing.iterrows():
+            url = str(row.get("job_url", ""))
+            if url and url in rev_url_set:
+                fk = make_fuzzy_key(
+                    str(row.get("title", "")),
+                    str(row.get("company", "")),
+                    str(row.get("state", "")),
+                )
+                if fk != "||":
+                    fkeys[fk] = {"url": url}
+        save_reviewed_fkeys(fkeys)
+        logger.info(f"Migration: wrote reviewed_fkeys.json with {len(fkeys)} entries")
+
     # Ensure eval_status column exists in both DataFrames
     if existing is not None and "eval_status" not in existing.columns:
         existing["eval_status"] = ""
@@ -110,6 +130,22 @@ def merge_and_export_csv(new_df: pd.DataFrame, config: AppConfig) -> Path:
     else:
         combined = new_df.copy()
         status_map = {}
+
+    # Fuzzy-key filter: silently drop new jobs that are repost-dupes of reviewed jobs
+    reviewed_fkeys_set = load_reviewed_fkeys()
+    if reviewed_fkeys_set:
+        rev_url_set = load_reviewed_urls()
+        combined["_fk"] = (
+            combined.get("company", pd.Series(dtype=str)).fillna("").apply(normalize_text) + "|" +
+            combined.get("title",   pd.Series(dtype=str)).fillna("").apply(normalize_text) + "|" +
+            combined.get("state",   pd.Series(dtype=str)).fillna("").apply(normalize_text)
+        )
+        is_canonical  = combined["job_url"].isin(rev_url_set)    # keep the original reviewed row
+        is_fkey_resur = combined["_fk"].isin(reviewed_fkeys_set) & ~is_canonical
+        n_dropped = int(is_fkey_resur.sum())
+        if n_dropped:
+            logger.info(f"Fuzzy-key filter: dropped {n_dropped} repost-dupes of reviewed jobs")
+        combined = combined[~is_fkey_resur].drop(columns=["_fk"], errors="ignore")
 
     # Deduplicate the combined data
     combined = deduplicate(combined)
